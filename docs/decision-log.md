@@ -22,6 +22,7 @@
 
 ## Index
 
+- [DL-2026-02-04-001 — Introduce BuildSpec v0 contract (@bax/buildspec)](#dl-2026-02-04-001--introduce-buildspec-v0-contract-baxbuildspec)
 - [DL-2026-02-03-001 — Vertical slice MVP: Landing Express first](#dl-2026-02-03-001--vertical-slice-mvp-landing-express-first)
 - [DL-2026-02-03-002 — Target initial wedges: services, restaurants, banquet venues](#dl-2026-02-03-002--target-initial-wedges-services-restaurants-banquet-venues)
 - [DL-2026-02-03-003 — Business atoms abstraction (Offer/Transaction/Identity/Operation)](#dl-2026-02-03-003--business-atoms-abstraction-offertransactionidentityoperation)
@@ -36,6 +37,21 @@
 - [DL-2026-02-03-012 — Reduced-motion as first-class requirement](#dl-2026-02-03-012--reduced-motion-as-first-class-requirement)
 
 ---
+
+## DL-2026-02-04-001 — Introduce BuildSpec v0 contract (@bax/buildspec)
+**Status:** accepted  
+**Owner:** CTO  
+**Date:** 2026-02-04
+
+### Decision
+Adopt BuildSpec v0 as a required contract and add `@bax/buildspec` with Zod validation.
+
+### Rationale
+We need a strict, versioned interface between intake/composer and the runtime to keep output deterministic and auditable.
+
+### Consequences / risks
+- Build/compose inputs must validate against BuildSpec v0.
+- Any changes require a Decision Log update and version bump to avoid drift.
 
 ## DL-2026-02-03-001 — Vertical slice MVP: Landing Express first
 **Status:** accepted  
