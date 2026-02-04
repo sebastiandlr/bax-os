@@ -2,14 +2,18 @@
     "name": "bax-os",
     "private": true,
     "workspaces": [
-      "apps/*",
-      "packages/*"
+        "apps/*",
+        "packages/*"
     ],
     "scripts": {
-      "dev": "npm --workspace apps/landing-engine run dev",
-      "build": "npm --workspace apps/landing-engine run build",
-      "start": "npm --workspace apps/landing-engine run start",
-      "lint": "npm --workspace apps/landing-engine run lint",
-      "check": "npm run lint && npm run build"
+        "dev": "npm --workspace apps/landing-engine run dev",
+        "build": "npm --workspace apps/landing-engine run build",
+        "start": "npm --workspace apps/landing-engine run start",
+        "lint": "npm --workspace apps/landing-engine run lint",
+        "buildspec:build": "npm --workspace @bax/buildspec run build",
+        "check": "npm run lint && npm run build && npm run buildspec:build"
+    },
+    "devDependencies": {
+        "typescript": "^5.9.3"
     }
-  }
+}
