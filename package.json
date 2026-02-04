@@ -9,6 +9,7 @@
       "dev": "npm --workspace apps/landing-engine run dev",
       "build": "npm --workspace apps/landing-engine run build",
       "start": "npm --workspace apps/landing-engine run start",
-      "lint": "npm --workspace apps/landing-engine run lint"
+      "lint": "npm --workspace apps/landing-engine run lint",
+      "check": "npm run lint && npm run build"
     }
   }
