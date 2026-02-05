@@ -104,6 +104,9 @@ dist
 # vitepress cache directory
 **/.vitepress/cache
 
+# Local BuildSpec overrides
+apps/landing-engine/src/content/specs/buildspec.local.json
+
 # Docusaurus cache and generated files
 .docusaurus
 
