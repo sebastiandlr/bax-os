@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "0.1.0",
+  "eventSchemaVersion": "0.1.0",
+  "mode": "lead",
+  "capabilities": [
+    "hero_identity_block",
+    "offer_showcase",
+    "trust_proof",
+    "lead_capture",
+    "faq_support",
+    "analytics_core"
+  ],
+  "metadata": {
+    "clientId": "demo_client",
+    "siteId": "demo_site"
+  }
+}
