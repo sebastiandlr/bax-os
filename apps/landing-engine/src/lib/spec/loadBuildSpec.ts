@@ -1,6 +1,7 @@
 import { readFile } from "fs/promises";
 import path from "path";
 import { parseBuildSpecV0, type BuildSpecV0 } from "@bax/buildspec";
+import { detectLandingEngineRoot } from "@/lib/spec/buildspecStorage";
 
 type SpecSource = "local" | "example";
 
@@ -8,9 +9,15 @@ export type LoadResult =
   | { ok: true; spec: BuildSpecV0; source: SpecSource }
   | { ok: false; errors: string[]; source: SpecSource };
 
-const SPEC_DIR = path.join(process.cwd(), "src/content/specs");
-const LOCAL_SPEC = path.join(SPEC_DIR, "buildspec.local.json");
-const EXAMPLE_SPEC = path.join(SPEC_DIR, "buildspec.v0.example.json");
+const APP_ROOT = detectLandingEngineRoot();
+const LOCAL_SPEC = path.join(APP_ROOT, "buildspec.local.json");
+const EXAMPLE_SPEC = path.join(
+  APP_ROOT,
+  "src",
+  "content",
+  "specs",
+  "buildspec.v0.example.json"
+);
 
 const isNotFoundError = (error: unknown): boolean => {
   return Boolean(
