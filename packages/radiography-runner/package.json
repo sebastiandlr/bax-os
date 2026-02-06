@@ -1,0 +1,25 @@
+{
+  "name": "@bax/radiography-runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "echo ok"
+  },
+  "dependencies": {
+    "@bax/buildspec": "file:../buildspec",
+    "@bax/display-rules": "file:../display-rules",
+    "@bax/radiography-contract": "file:../radiography-contract"
+  }
+}

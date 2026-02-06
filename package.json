@@ -11,7 +11,10 @@
         "start": "npm --workspace apps/landing-engine run start",
         "lint": "npm --workspace apps/landing-engine run lint",
         "buildspec:build": "npm --workspace @bax/buildspec run build",
-        "check": "npm run lint && npm run build && npm run buildspec:build"
+        "radiography-contract:build": "npm --workspace @bax/radiography-contract run build",
+        "display-rules:build": "npm --workspace @bax/display-rules run build",
+        "radiography-runner:build": "npm --workspace @bax/radiography-runner run build",
+        "check": "npm run lint && npm run buildspec:build && npm run radiography-contract:build && npm run display-rules:build && npm run radiography-runner:build && npm run build"
     },
     "devDependencies": {
         "typescript": "^5.9.3"
