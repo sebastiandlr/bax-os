@@ -293,21 +293,75 @@ export default function StudioPage() {
     URL.revokeObjectURL(url);
   };
 
-  const radiography = useMemo(() => {
-    if (!validation.ok) {
-      return null;
+  const shouldRunRadiography =
+    validation.ok && validation.spec.capabilities.length > 0;
+
+  type RadiographyView = {
+    contractVersion: string;
+    display_rules_version: string;
+    gating_decision: {
+      status: string;
+      core_percent: number;
+      reason_codes: string[];
+    };
+    run_metadata: {
+      unknown_fields_count: number;
+    };
+    composer_preset: {
+      mode: string;
+      capabilities: string[];
+    };
+  };
+
+  const [radiographyView, setRadiographyView] = useState<RadiographyView | null>(
+    null
+  );
+
+  useEffect(() => {
+    if (!shouldRunRadiography || !validation.ok) {
+      setRadiographyView(null);
+      return;
     }
 
-    return runRadiographyV0({
-      contractVersion: "0.1.0",
-      business_name: "BAX Demo",
-      city: "CDMX",
-      country: "MX",
-      seed_urls: ["https://example.com"],
-      mode_hint: validation.spec.mode,
-      language: "es",
-    });
-  }, [validation]);
+    try {
+      const output = runRadiographyV0({
+        contractVersion: "0.1.0",
+        business_name: "PLACEHOLDER: BAX Demo",
+        city: "PLACEHOLDER: CDMX",
+        country: "PLACEHOLDER: MX",
+        seed_urls: [],
+        mode_hint: validation.spec.mode,
+        language: "es",
+      });
+
+      setRadiographyView({
+        contractVersion: output.contractVersion,
+        display_rules_version: output.display_rules_version,
+        gating_decision: output.gating_decision,
+        run_metadata: {
+          unknown_fields_count: output.run_metadata.unknown_fields_count,
+        },
+        composer_preset: output.composer_preset,
+      });
+    } catch {
+      setRadiographyView({
+        contractVersion: "0.1.0",
+        display_rules_version: "0.1.0",
+        gating_decision: {
+          status: "blocked",
+          core_percent: 0,
+          reason_codes: ["missing_seed_url"],
+        },
+        run_metadata: {
+          unknown_fields_count: 0,
+        },
+        composer_preset: {
+          mode: validation.spec.mode,
+          capabilities: validation.spec.capabilities,
+        },
+      });
+    }
+  }, [shouldRunRadiography, validation]);
 
   const isValid = validation.ok;
 
@@ -546,24 +600,45 @@ export default function StudioPage() {
             </ul>
           )}
 
-          {isValid && radiography ? (
+          {!shouldRunRadiography ? (
+            <div className="mt-6 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-zinc-400">
+              Radiography: blocked (invalid BuildSpec)
+            </div>
+          ) : null}
+
+          {shouldRunRadiography && radiographyView ? (
             <div className="mt-6 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
               <div className="text-zinc-200">Radiography</div>
               <div className="mt-1 text-zinc-400">
-                status: <span className="text-zinc-200">{radiography.gating_decision.status}</span>
+                contractVersion:{" "}
+                <span className="text-zinc-200">{radiographyView.contractVersion}</span>
               </div>
               <div className="mt-1 text-zinc-400">
-                core_percent: <span className="text-zinc-200">{radiography.gating_decision.core_percent}</span>
+                status:{" "}
+                <span className="text-zinc-200">{radiographyView.gating_decision.status}</span>
+              </div>
+              <div className="mt-1 text-zinc-400">
+                core_percent:{" "}
+                <span className="text-zinc-200">{radiographyView.gating_decision.core_percent}</span>
+              </div>
+              <div className="mt-1 text-zinc-400">
+                unknown_fields_count:{" "}
+                <span className="text-zinc-200">{radiographyView.run_metadata.unknown_fields_count}</span>
+              </div>
+              <div className="mt-1 text-zinc-400">
+                display_rules_version:{" "}
+                <span className="text-zinc-200">{radiographyView.display_rules_version}</span>
               </div>
               <ul className="mt-2 list-disc pl-5 text-zinc-300">
-                {radiography.gating_decision.reason_codes.map((reasonCode) => (
+                {radiographyView.gating_decision.reason_codes.map((reasonCode) => (
                   <li key={reasonCode}>{reasonCode}</li>
                 ))}
               </ul>
               <div className="mt-2 text-zinc-400">
-                composer_preset: <span className="text-zinc-200">{radiography.composer_preset.mode}</span>
+                composer_preset:{" "}
+                <span className="text-zinc-200">{radiographyView.composer_preset.mode}</span>
                 {" "}
-                ({radiography.composer_preset.capabilities.length} capabilities)
+                ({radiographyView.composer_preset.capabilities.length} capabilities)
               </div>
             </div>
           ) : null}
