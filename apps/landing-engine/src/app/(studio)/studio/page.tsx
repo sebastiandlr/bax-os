@@ -23,8 +23,32 @@ type BuildSpecResponse = { source: Source; jsonText: string };
 
 const DEFAULT_SPEC = BuildSpecV0Schema.parse(exampleSpec);
 
+type RadiographyInputsState = {
+  business_name: string;
+  city: string;
+  country: string;
+  language: string;
+  seed_urls_text: string;
+};
+
+const RADIOGRAPHY_INPUTS_STORAGE_KEY = "bax_radiography_inputs_v0";
+const DEFAULT_RADIOGRAPHY_INPUTS: RadiographyInputsState = {
+  business_name: "PLACEHOLDER: BAX Demo",
+  city: "PLACEHOLDER: CDMX",
+  country: "MX",
+  language: "es",
+  seed_urls_text: "",
+};
+
 const stringifySpec = (spec: BuildSpecV0): string => {
   return `${JSON.stringify(spec, null, 2)}\n`;
+};
+
+const parseSeedUrls = (text: string): string[] => {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
 };
 
 const validateJsonText = (jsonText: string): ValidationState => {
@@ -66,15 +90,91 @@ export default function StudioPage() {
   const [lastValidSpec, setLastValidSpec] = useState<BuildSpecV0>(DEFAULT_SPEC);
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [radiographyInputs, setRadiographyInputs] = useState<RadiographyInputsState>(
+    DEFAULT_RADIOGRAPHY_INPUTS
+  );
 
   const validation = useMemo(() => validateJsonText(jsonText), [jsonText]);
   const activeSpec = validation.ok ? validation.spec : lastValidSpec;
+  const seedUrls = useMemo(
+    () => parseSeedUrls(radiographyInputs.seed_urls_text),
+    [radiographyInputs.seed_urls_text]
+  );
 
   useEffect(() => {
     if (validation.ok) {
       setLastValidSpec(validation.spec);
     }
   }, [validation]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      const stored = window.localStorage.getItem(RADIOGRAPHY_INPUTS_STORAGE_KEY);
+      if (!stored) {
+        return;
+      }
+
+      const parsed = JSON.parse(stored) as Partial<{
+        business_name: unknown;
+        city: unknown;
+        country: unknown;
+        language: unknown;
+        seed_urls: unknown;
+        seed_urls_text: unknown;
+      }>;
+      const seedUrlsFromArray = Array.isArray(parsed.seed_urls)
+        ? parsed.seed_urls.filter((url): url is string => typeof url === "string")
+        : [];
+      const seedText =
+        typeof parsed.seed_urls_text === "string"
+          ? parsed.seed_urls_text
+          : seedUrlsFromArray.join("\n");
+
+      setRadiographyInputs({
+        business_name:
+          typeof parsed.business_name === "string"
+            ? parsed.business_name
+            : DEFAULT_RADIOGRAPHY_INPUTS.business_name,
+        city:
+          typeof parsed.city === "string"
+            ? parsed.city
+            : DEFAULT_RADIOGRAPHY_INPUTS.city,
+        country:
+          typeof parsed.country === "string"
+            ? parsed.country
+            : DEFAULT_RADIOGRAPHY_INPUTS.country,
+        language:
+          typeof parsed.language === "string"
+            ? parsed.language
+            : DEFAULT_RADIOGRAPHY_INPUTS.language,
+        seed_urls_text: seedText,
+      });
+    } catch {
+      // Ignore localStorage parse failures and keep defaults.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const payload = {
+      business_name: radiographyInputs.business_name,
+      city: radiographyInputs.city,
+      country: radiographyInputs.country,
+      language: radiographyInputs.language,
+      seed_urls: seedUrls,
+    };
+    window.localStorage.setItem(
+      RADIOGRAPHY_INPUTS_STORAGE_KEY,
+      JSON.stringify(payload)
+    );
+  }, [radiographyInputs, seedUrls]);
 
   const loadSpec = useCallback(async (requestSource: "default" | "example") => {
     setLoading(true);
@@ -293,8 +393,16 @@ export default function StudioPage() {
     URL.revokeObjectURL(url);
   };
 
-  const shouldRunRadiography =
-    validation.ok && validation.spec.capabilities.length > 0;
+  const handleRadiographyInputChange = useCallback(
+    (key: keyof RadiographyInputsState, value: string) => {
+      setRadiographyInputs((prev) => ({ ...prev, [key]: value }));
+    },
+    []
+  );
+
+  const hasValidSpec = validation.ok && validation.spec.capabilities.length > 0;
+  const hasSeedUrls = seedUrls.length > 0;
+  const canRunRadiography = hasValidSpec && hasSeedUrls;
 
   type RadiographyView = {
     contractVersion: string;
@@ -318,7 +426,7 @@ export default function StudioPage() {
   );
 
   useEffect(() => {
-    if (!shouldRunRadiography || !validation.ok) {
+    if (!canRunRadiography || !validation.ok) {
       setRadiographyView(null);
       return;
     }
@@ -326,12 +434,12 @@ export default function StudioPage() {
     try {
       const output = runRadiographyV0({
         contractVersion: "0.1.0",
-        business_name: "PLACEHOLDER: BAX Demo",
-        city: "PLACEHOLDER: CDMX",
-        country: "PLACEHOLDER: MX",
-        seed_urls: [],
+        business_name: radiographyInputs.business_name,
+        city: radiographyInputs.city,
+        country: radiographyInputs.country,
+        seed_urls: seedUrls,
         mode_hint: validation.spec.mode,
-        language: "es",
+        language: radiographyInputs.language,
       });
 
       setRadiographyView({
@@ -350,7 +458,7 @@ export default function StudioPage() {
         gating_decision: {
           status: "blocked",
           core_percent: 0,
-          reason_codes: ["missing_seed_url"],
+          reason_codes: ["runner_error"],
         },
         run_metadata: {
           unknown_fields_count: 0,
@@ -361,7 +469,7 @@ export default function StudioPage() {
         },
       });
     }
-  }, [shouldRunRadiography, validation]);
+  }, [canRunRadiography, radiographyInputs, seedUrls, validation]);
 
   const isValid = validation.ok;
 
@@ -600,13 +708,82 @@ export default function StudioPage() {
             </ul>
           )}
 
-          {!shouldRunRadiography ? (
+          <div className="mt-6 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
+            <div className="text-zinc-200">Radiography Inputs</div>
+            <div className="mt-3 grid gap-3">
+              <label className="block">
+                <span className="text-zinc-300">business_name</span>
+                <input
+                  className="mt-1 block w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100"
+                  value={radiographyInputs.business_name}
+                  onChange={(event) =>
+                    handleRadiographyInputChange("business_name", event.target.value)
+                  }
+                />
+              </label>
+              <label className="block">
+                <span className="text-zinc-300">city</span>
+                <input
+                  className="mt-1 block w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100"
+                  value={radiographyInputs.city}
+                  onChange={(event) =>
+                    handleRadiographyInputChange("city", event.target.value)
+                  }
+                />
+              </label>
+              <label className="block">
+                <span className="text-zinc-300">country</span>
+                <input
+                  className="mt-1 block w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100"
+                  value={radiographyInputs.country}
+                  onChange={(event) =>
+                    handleRadiographyInputChange("country", event.target.value)
+                  }
+                />
+              </label>
+              <label className="block">
+                <span className="text-zinc-300">language</span>
+                <input
+                  className="mt-1 block w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100"
+                  value={radiographyInputs.language}
+                  onChange={(event) =>
+                    handleRadiographyInputChange("language", event.target.value)
+                  }
+                />
+              </label>
+              <label className="block">
+                <span className="text-zinc-300">seed_urls (one per line)</span>
+                <textarea
+                  className="mt-1 min-h-[96px] w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-100"
+                  value={radiographyInputs.seed_urls_text}
+                  onChange={(event) =>
+                    handleRadiographyInputChange("seed_urls_text", event.target.value)
+                  }
+                  spellCheck={false}
+                />
+              </label>
+            </div>
+            <div className="mt-2 text-xs text-zinc-500">
+              Stored locally in your browser (localStorage).
+            </div>
+          </div>
+
+          {!hasValidSpec ? (
             <div className="mt-6 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-zinc-400">
               Radiography: blocked (invalid BuildSpec)
             </div>
           ) : null}
 
-          {shouldRunRadiography && radiographyView ? (
+          {hasValidSpec && !hasSeedUrls ? (
+            <div className="mt-6 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-zinc-400">
+              <div>Radiography: blocked (missing seed_urls)</div>
+              <ul className="mt-2 list-disc pl-5 text-zinc-300">
+                <li>missing_seed_url</li>
+              </ul>
+            </div>
+          ) : null}
+
+          {canRunRadiography && radiographyView ? (
             <div className="mt-6 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
               <div className="text-zinc-200">Radiography</div>
               <div className="mt-1 text-zinc-400">
