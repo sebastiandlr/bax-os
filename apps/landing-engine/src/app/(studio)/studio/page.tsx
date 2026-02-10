@@ -41,7 +41,6 @@ const DEFAULT_RADIOGRAPHY_INPUTS: RadiographyInputsState = {
 };
 
 type RadiographyView = ReturnType<typeof runRadiographyV0>;
-
 const stringifySpec = (spec: BuildSpecV0): string => {
   return `${JSON.stringify(spec, null, 2)}\n`;
 };
