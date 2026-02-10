@@ -40,6 +40,8 @@ const DEFAULT_RADIOGRAPHY_INPUTS: RadiographyInputsState = {
   seed_urls_text: "",
 };
 
+type RadiographyView = ReturnType<typeof runRadiographyV0>;
+
 const stringifySpec = (spec: BuildSpecV0): string => {
   return `${JSON.stringify(spec, null, 2)}\n`;
 };
@@ -393,6 +395,22 @@ export default function StudioPage() {
     URL.revokeObjectURL(url);
   };
 
+  const handleExportRadiography = () => {
+    if (!radiographyView) {
+      return;
+    }
+
+    const blob = new Blob([`${JSON.stringify(radiographyView, null, 2)}\n`], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "radiography.v0.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
   const handleRadiographyInputChange = useCallback(
     (key: keyof RadiographyInputsState, value: string) => {
       setRadiographyInputs((prev) => ({ ...prev, [key]: value }));
@@ -403,23 +421,6 @@ export default function StudioPage() {
   const hasValidSpec = validation.ok && validation.spec.capabilities.length > 0;
   const hasSeedUrls = seedUrls.length > 0;
   const canRunRadiography = hasValidSpec && hasSeedUrls;
-
-  type RadiographyView = {
-    contractVersion: string;
-    display_rules_version: string;
-    gating_decision: {
-      status: string;
-      core_percent: number;
-      reason_codes: string[];
-    };
-    run_metadata: {
-      unknown_fields_count: number;
-    };
-    composer_preset: {
-      mode: string;
-      capabilities: string[];
-    };
-  };
 
   const [radiographyView, setRadiographyView] = useState<RadiographyView | null>(
     null
@@ -432,40 +433,67 @@ export default function StudioPage() {
     }
 
     try {
-      const output = runRadiographyV0({
-        contractVersion: "0.1.0",
-        business_name: radiographyInputs.business_name,
-        city: radiographyInputs.city,
-        country: radiographyInputs.country,
-        seed_urls: seedUrls,
-        mode_hint: validation.spec.mode,
-        language: radiographyInputs.language,
-      });
-
-      setRadiographyView({
-        contractVersion: output.contractVersion,
-        display_rules_version: output.display_rules_version,
-        gating_decision: output.gating_decision,
-        run_metadata: {
-          unknown_fields_count: output.run_metadata.unknown_fields_count,
+      const output = runRadiographyV0(
+        {
+          radiography_contract_version: "0.1.0",
+          business_name: radiographyInputs.business_name,
+          city: radiographyInputs.city,
+          country: radiographyInputs.country,
+          seed_urls: seedUrls,
+          mode_hint: validation.spec.mode,
+          language: radiographyInputs.language,
         },
-        composer_preset: output.composer_preset,
-      });
+        validation.spec
+      );
+
+      setRadiographyView(output);
     } catch {
       setRadiographyView({
-        contractVersion: "0.1.0",
+        radiography_contract_version: "0.1.0",
+        businessdna_schema_version: "0.1.0",
+        buildspec_schema_version: "0.1.0",
         display_rules_version: "0.1.0",
-        gating_decision: {
-          status: "blocked",
-          core_percent: 0,
-          reason_codes: ["runner_error"],
+        business_dna_patch: [],
+        provenance_map: {},
+        gap_report: {
+          reason_codes: ["lint_violation"],
+          unresolved_fields: [],
         },
+        gating_decision: {
+          status: "hard_fail",
+          core_percent: 0,
+          reason_codes: ["lint_violation"],
+        },
+        lint_report: [
+          {
+            rule_id: "NO_NUMBERS_WITHOUT_SOURCE",
+            reason_code: "lint_violation",
+            severity: "hard_fail",
+            message: "Runner failed to produce a deterministic output.",
+          },
+        ],
         run_metadata: {
+          run_id: "00000000-0000-4000-8000-000000000000",
+          duration_ms: 0,
+          source_types_used: ["manual"],
           unknown_fields_count: 0,
+          provenance_coverage_percent: 0,
+          confidence_factors: {
+            source_reliability: 0,
+            corroboration: 0,
+            freshness: 0,
+          },
         },
         composer_preset: {
+          schemaVersion: "0.1.0",
+          eventSchemaVersion: "0.1.0",
           mode: validation.spec.mode,
           capabilities: validation.spec.capabilities,
+        },
+        ghost_preview_config: {
+          theme_id: "neutral-v0",
+          layout_id: "single-column-v0",
+          show_unverified: false,
         },
       });
     }
@@ -785,10 +813,21 @@ export default function StudioPage() {
 
           {canRunRadiography && radiographyView ? (
             <div className="mt-6 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
-              <div className="text-zinc-200">Radiography</div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-zinc-200">Radiography</div>
+                <button
+                  type="button"
+                  onClick={handleExportRadiography}
+                  className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500"
+                >
+                  Export Radiography JSON
+                </button>
+              </div>
               <div className="mt-1 text-zinc-400">
                 contractVersion:{" "}
-                <span className="text-zinc-200">{radiographyView.contractVersion}</span>
+                <span className="text-zinc-200">
+                  {radiographyView.radiography_contract_version}
+                </span>
               </div>
               <div className="mt-1 text-zinc-400">
                 status:{" "}
@@ -803,12 +842,31 @@ export default function StudioPage() {
                 <span className="text-zinc-200">{radiographyView.run_metadata.unknown_fields_count}</span>
               </div>
               <div className="mt-1 text-zinc-400">
+                provenance_coverage_percent:{" "}
+                <span className="text-zinc-200">
+                  {radiographyView.run_metadata.provenance_coverage_percent}
+                </span>
+              </div>
+              <div className="mt-1 text-zinc-400">
+                patch_ops:{" "}
+                <span className="text-zinc-200">{radiographyView.business_dna_patch.length}</span>
+              </div>
+              <div className="mt-1 text-zinc-400">
                 display_rules_version:{" "}
                 <span className="text-zinc-200">{radiographyView.display_rules_version}</span>
               </div>
+              <div className="mt-2 text-zinc-300">gating reason_codes</div>
               <ul className="mt-2 list-disc pl-5 text-zinc-300">
                 {radiographyView.gating_decision.reason_codes.map((reasonCode) => (
                   <li key={reasonCode}>{reasonCode}</li>
+                ))}
+              </ul>
+              <div className="mt-2 text-zinc-300">lint_report</div>
+              <ul className="mt-2 list-disc pl-5 text-zinc-300">
+                {radiographyView.lint_report.map((finding) => (
+                  <li key={`${finding.rule_id}-${finding.reason_code}`}>
+                    {finding.rule_id} ({finding.reason_code})
+                  </li>
                 ))}
               </ul>
               <div className="mt-2 text-zinc-400">
