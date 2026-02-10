@@ -1,56 +1,65 @@
-import { FieldStatusEnum, type FieldStatus } from "@bax/radiography-contract";
+import {
+  PUBLISH_BLOCKER_FIELDS_V0,
+  type FieldStatusV0
+} from "@bax/radiography-contract";
 
 export const DISPLAY_RULES_V0_VERSION = "0.1.0" as const;
 
-export const PUBLISH_BLOCKER_FIELDS_V0 = [
-  "business_name",
-  "city",
-  "country",
-  "mode",
-  "primary_cta"
-] as const;
-
-export const shouldShowField = (
-  fieldPath: string,
-  fieldStatus: FieldStatus
-): boolean => {
-  if (PUBLISH_BLOCKER_FIELDS_V0.includes(fieldPath as typeof PUBLISH_BLOCKER_FIELDS_V0[number])) {
-    return fieldStatus === "verified";
-  }
-  return true;
+export type DisplayDecision = {
+  show: boolean;
+  reason: "ok" | "requires_verified";
 };
 
-export const SafeCopyIdEnum = {
-  NOT_VERIFIED: "not_verified",
-  NEEDS_REVIEW: "needs_review",
-  BLOCKED: "blocked"
-} as const;
-export type SafeCopyId = (typeof SafeCopyIdEnum)[keyof typeof SafeCopyIdEnum];
+type ShouldShowFieldInput = {
+  fieldPath: string;
+  status: FieldStatusV0;
+};
 
-const SAFE_COPY: Record<string, Record<SafeCopyId, string>> = {
-  "en": {
-    not_verified: "This field is not verified yet.",
-    needs_review: "This item needs manual review.",
-    blocked: "This item is blocked from publishing."
+const isPublishBlockerField = (fieldPath: string): boolean => {
+  return PUBLISH_BLOCKER_FIELDS_V0.includes(
+    fieldPath as (typeof PUBLISH_BLOCKER_FIELDS_V0)[number]
+  );
+};
+
+export const shouldShowField = ({ fieldPath, status }: ShouldShowFieldInput): boolean => {
+  if (isPublishBlockerField(fieldPath)) {
+    return status === "verified";
+  }
+  return status !== "conflict";
+};
+
+export const getDisplayDecision = (input: ShouldShowFieldInput): DisplayDecision => {
+  const show = shouldShowField(input);
+  return {
+    show,
+    reason: show ? "ok" : "requires_verified"
+  };
+};
+
+const SAFE_COPY_BY_LANG: Record<string, Record<string, string>> = {
+  en: {
+    default: "Information hidden until verified.",
+    "/contact/phone": "Phone hidden until verified.",
+    "/location/address": "Address hidden until verified.",
+    "/operations/hours": "Hours hidden until verified.",
+    "/offers/pricing": "Pricing hidden until verified.",
+    "/claims": "Claims hidden until verified."
   },
-  "es": {
-    not_verified: "Este campo aún no está verificado.",
-    needs_review: "Este elemento requiere revisión manual.",
-    blocked: "Este elemento está bloqueado para publicar."
+  es: {
+    default: "Informacion oculta hasta verificar.",
+    "/contact/phone": "Telefono oculto hasta verificar.",
+    "/location/address": "Direccion oculta hasta verificar.",
+    "/operations/hours": "Horario oculto hasta verificar.",
+    "/offers/pricing": "Precios ocultos hasta verificar.",
+    "/claims": "Afirmaciones ocultas hasta verificar."
   }
 };
 
-export const getSafeCopy = (id: SafeCopyId, locale = "en"): string => {
-  const lang = SAFE_COPY[locale] ? locale : "en";
-  return SAFE_COPY[lang][id];
+const normalizeLanguage = (lang: string): "en" | "es" => {
+  return lang.toLowerCase().startsWith("es") ? "es" : "en";
 };
 
-export const INSTAGRAM_ALLOWLIST_V0 = [
-  "identity.brand_name",
-  "identity.tone",
-  "identity.aesthetic",
-  "identity.tagline",
-  "identity.keywords"
-] as const;
-
-export const FieldStatusEnumV0 = FieldStatusEnum;
+export const safeCopyFor = (fieldKey: string, lang: string): string => {
+  const language = normalizeLanguage(lang);
+  return SAFE_COPY_BY_LANG[language][fieldKey] ?? SAFE_COPY_BY_LANG[language].default;
+};

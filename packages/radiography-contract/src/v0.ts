@@ -1,50 +1,79 @@
 import { z } from "zod";
-import { BuildSpecV0Schema } from "@bax/buildspec";
+import { BUILD_SPEC_V0_VERSION, BuildSpecV0Schema } from "@bax/buildspec";
 
 export const RADIOGRAPHY_CONTRACT_V0_VERSION = "0.1.0" as const;
+export const BUSINESSDNA_SCHEMA_V0_VERSION = "0.1.0" as const;
+export const DISPLAY_RULES_V0_VERSION = "0.1.0" as const;
 
-export const SourceTypeEnum = z.enum([
+export const SourceTypeV0Enum = z.enum([
+  "manual",
+  "user_input",
   "gbp",
   "website",
   "instagram",
   "pdf",
-  "user_input",
   "manual_verify"
 ]);
-export type SourceType = z.infer<typeof SourceTypeEnum>;
+export type SourceTypeV0 = z.infer<typeof SourceTypeV0Enum>;
 
-export const FieldStatusEnum = z.enum([
+export const FieldStatusV0Enum = z.enum([
   "verified",
   "unverified",
   "needs_verify",
   "conflict",
   "unknown"
 ]);
-export type FieldStatus = z.infer<typeof FieldStatusEnum>;
+export type FieldStatusV0 = z.infer<typeof FieldStatusV0Enum>;
 
-export const ReasonCodeEnum = z.enum([
+export const ReasonCodeV0Enum = z.enum([
   "missing_seed_url",
-  "insufficient_sources",
   "needs_manual_verify",
+  "unknown_field",
+  "unverified_publish_blocker",
+  "missing_provenance",
+  "language_not_supported",
+  "insufficient_core_coverage",
   "conflict_detected",
-  "unknown_fields_present"
+  "lint_violation"
 ]);
-export type ReasonCode = z.infer<typeof ReasonCodeEnum>;
+export type ReasonCodeV0 = z.infer<typeof ReasonCodeV0Enum>;
+
+export const LintRuleIdV0Enum = z.enum([
+  "BLOCK_UNVERIFIED_PUBLISH",
+  "NO_NUMBERS_WITHOUT_SOURCE",
+  "LANGUAGE_MISMATCH"
+]);
+export type LintRuleIdV0 = z.infer<typeof LintRuleIdV0Enum>;
 
 export const CORE_FIELDS_V0 = [
-  "business_name",
-  "city",
-  "country",
-  "mode",
-  "primary_cta"
+  "/identity/business_name",
+  "/location/city",
+  "/location/country",
+  "/site/language",
+  "/buildspec/mode",
+  "/buildspec/capabilities"
 ] as const;
-export type CoreField = (typeof CORE_FIELDS_V0)[number];
+export type CoreFieldV0 = (typeof CORE_FIELDS_V0)[number];
 
-export const JsonPatchOpEnum = z.enum(["add", "replace", "remove"]);
+export const PUBLISH_BLOCKER_FIELDS_V0 = [
+  "/contact/phone",
+  "/location/address",
+  "/operations/hours",
+  "/offers/pricing",
+  "/claims"
+] as const;
+export type PublishBlockerFieldV0 = (typeof PUBLISH_BLOCKER_FIELDS_V0)[number];
+
+export const JsonPointerV0Schema = z.string().regex(/^\/.*$/, {
+  message: "path must be a JSON Pointer starting with /"
+});
+
+export const JsonPatchOpV0Enum = z.enum(["add", "replace", "remove"]);
+
 export const JsonPatchV0Schema = z
   .object({
-    op: JsonPatchOpEnum,
-    path: z.string().min(1),
+    op: JsonPatchOpV0Enum,
+    path: JsonPointerV0Schema,
     value: z.unknown().optional()
   })
   .strict()
@@ -52,16 +81,104 @@ export const JsonPatchV0Schema = z
     if ((value.op === "add" || value.op === "replace") && value.value === undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "value is required for add/replace operations",
-        path: ["value"]
+        path: ["value"],
+        message: "value is required for add/replace operations"
       });
     }
   });
 export type JsonPatchV0 = z.infer<typeof JsonPatchV0Schema>;
 
+export const ConfidenceFactorsV0Schema = z
+  .object({
+    source_reliability: z.number().min(0).max(1),
+    corroboration: z.number().min(0).max(1),
+    freshness: z.number().min(0).max(1)
+  })
+  .strict();
+export type ConfidenceFactorsV0 = z.infer<typeof ConfidenceFactorsV0Schema>;
+
+export const ProvenanceSourceV0Schema = z
+  .object({
+    source_type: SourceTypeV0Enum,
+    source_ref: z.string().min(1),
+    confidence: z.number().min(0).max(1)
+  })
+  .strict();
+export type ProvenanceSourceV0 = z.infer<typeof ProvenanceSourceV0Schema>;
+
+export const ProvenanceEntryV0Schema = z
+  .object({
+    status: FieldStatusV0Enum,
+    value: z.unknown(),
+    sources: z.array(ProvenanceSourceV0Schema).min(1),
+    confidence_factors: ConfidenceFactorsV0Schema
+  })
+  .strict();
+export type ProvenanceEntryV0 = z.infer<typeof ProvenanceEntryV0Schema>;
+
+export const LintSeverityV0Enum = z.enum(["warn", "soft_fail", "hard_fail"]);
+export type LintSeverityV0 = z.infer<typeof LintSeverityV0Enum>;
+
+export const LintFindingV0Schema = z
+  .object({
+    rule_id: LintRuleIdV0Enum,
+    reason_code: ReasonCodeV0Enum,
+    severity: LintSeverityV0Enum,
+    message: z.string().min(1)
+  })
+  .strict();
+export type LintFindingV0 = z.infer<typeof LintFindingV0Schema>;
+
+export const GapItemV0Schema = z
+  .object({
+    path: JsonPointerV0Schema,
+    status: FieldStatusV0Enum,
+    reason_code: ReasonCodeV0Enum
+  })
+  .strict();
+export type GapItemV0 = z.infer<typeof GapItemV0Schema>;
+
+export const GapReportV0Schema = z
+  .object({
+    reason_codes: z.array(ReasonCodeV0Enum),
+    unresolved_fields: z.array(GapItemV0Schema)
+  })
+  .strict();
+export type GapReportV0 = z.infer<typeof GapReportV0Schema>;
+
+export const GhostPreviewConfigV0Schema = z
+  .object({
+    theme_id: z.string().min(1),
+    layout_id: z.string().min(1),
+    show_unverified: z.boolean()
+  })
+  .strict();
+export type GhostPreviewConfigV0 = z.infer<typeof GhostPreviewConfigV0Schema>;
+
+export const GatingDecisionV0Schema = z
+  .object({
+    status: z.enum(["pass", "soft_fail", "hard_fail"]),
+    core_percent: z.number().min(0).max(100),
+    reason_codes: z.array(ReasonCodeV0Enum)
+  })
+  .strict();
+export type GatingDecisionV0 = z.infer<typeof GatingDecisionV0Schema>;
+
+export const RunMetadataV0Schema = z
+  .object({
+    run_id: z.string().uuid(),
+    duration_ms: z.number().int().nonnegative(),
+    source_types_used: z.array(SourceTypeV0Enum).min(1),
+    unknown_fields_count: z.number().int().nonnegative(),
+    provenance_coverage_percent: z.number().min(0).max(100),
+    confidence_factors: ConfidenceFactorsV0Schema
+  })
+  .strict();
+export type RunMetadataV0 = z.infer<typeof RunMetadataV0Schema>;
+
 export const RadiographyInputV0Schema = z
   .object({
-    contractVersion: z.literal(RADIOGRAPHY_CONTRACT_V0_VERSION),
+    radiography_contract_version: z.literal(RADIOGRAPHY_CONTRACT_V0_VERSION),
     business_name: z.string().min(1),
     city: z.string().min(1),
     country: z.string().min(1),
@@ -72,61 +189,19 @@ export const RadiographyInputV0Schema = z
   .strict();
 export type RadiographyInputV0 = z.infer<typeof RadiographyInputV0Schema>;
 
-const ProvenanceEntryV0Schema = z
-  .object({
-    status: FieldStatusEnum,
-    source_type: SourceTypeEnum,
-    reason_code: ReasonCodeEnum.optional(),
-    source_url: z.string().url().optional()
-  })
-  .strict();
-
-const GapReportV0Schema = z
-  .object({
-    missing_fields: z.array(z.string()),
-    reason_codes: z.array(ReasonCodeEnum)
-  })
-  .strict();
-
-const GhostPreviewConfigV0Schema = z
-  .object({
-    enabled: z.boolean(),
-    mode: z.enum(["static", "theatre"]),
-    preview_url: z.string().url().optional()
-  })
-  .strict();
-
-const GatingDecisionV0Schema = z
-  .object({
-    status: z.enum(["pass", "needs_review", "blocked"]),
-    reason_codes: z.array(ReasonCodeEnum),
-    core_percent: z.number().min(0).max(100)
-  })
-  .strict();
-
-const RunMetadataV0Schema = z
-  .object({
-    run_id: z.string().min(1),
-    duration_ms: z.number().int().nonnegative(),
-    source_types_used: z.array(SourceTypeEnum),
-    unknown_fields_count: z.number().int().nonnegative(),
-    gating_reason_codes: z.array(ReasonCodeEnum)
-  })
-  .strict();
-
 export const RadiographyOutputV0Schema = z
   .object({
-    contractVersion: z.literal(RADIOGRAPHY_CONTRACT_V0_VERSION),
-    businessdna_schema_version: z.string().min(1),
-    buildspec_version: z.string().min(1),
-    display_rules_version: z.string().min(1),
-    business_dna_partial: z.record(z.string(), z.unknown()),
-    patches: z.array(JsonPatchV0Schema),
-    provenance_map: z.record(z.string(), ProvenanceEntryV0Schema),
+    radiography_contract_version: z.literal(RADIOGRAPHY_CONTRACT_V0_VERSION),
+    businessdna_schema_version: z.literal(BUSINESSDNA_SCHEMA_V0_VERSION),
+    buildspec_schema_version: z.literal(BUILD_SPEC_V0_VERSION),
+    display_rules_version: z.literal(DISPLAY_RULES_V0_VERSION),
+    business_dna_patch: z.array(JsonPatchV0Schema).min(1),
+    provenance_map: z.record(JsonPointerV0Schema, ProvenanceEntryV0Schema),
     gap_report: GapReportV0Schema,
     composer_preset: BuildSpecV0Schema,
     ghost_preview_config: GhostPreviewConfigV0Schema,
     gating_decision: GatingDecisionV0Schema,
+    lint_report: z.array(LintFindingV0Schema),
     run_metadata: RunMetadataV0Schema
   })
   .strict();
