@@ -1,21 +1,9 @@
-import type { RadiographyView } from "../_lib/types";
+import type { RadiographyView, RunLogListItem } from "../_lib/types";
 
 type RunSummary = {
   run_id: string;
   created_at: string;
   duration_ms: number;
-};
-
-type RunLogListItem = {
-  run_id: string;
-  created_at: string;
-  duration_ms: number;
-  status: "pass" | "soft_fail" | "hard_fail";
-  core_percent: number;
-  reason_codes: string[];
-  seed_urls_count: number;
-  unique_hosts_count: number;
-  path: string;
 };
 
 type RadiographyPanelProps = {

@@ -65,7 +65,16 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const limit = parseListLimit(searchParams.get("limit"));
-    const items = await listRunLogs(limit);
+    const items = (await listRunLogs(limit)).map((item) => ({
+      run_id: item.run_id,
+      created_at: item.created_at,
+      duration_ms: item.duration_ms,
+      status: item.status,
+      core_percent: item.core_percent,
+      reason_codes: item.reason_codes,
+      seed_urls_count: item.seed_urls_count,
+      unique_hosts_count: item.unique_hosts_count
+    }));
     return NextResponse.json({ ok: true, items });
   } catch (error) {
     const message =
