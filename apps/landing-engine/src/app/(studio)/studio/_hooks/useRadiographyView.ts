@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { runRadiographyV0 } from "@bax/radiography-runner";
 import {
   RadiographyRunLogV0Schema,
@@ -23,6 +23,18 @@ type RunSummary = {
   duration_ms: number;
 };
 
+export type RunLogListItem = {
+  run_id: string;
+  created_at: string;
+  duration_ms: number;
+  status: "pass" | "soft_fail" | "hard_fail";
+  core_percent: number;
+  reason_codes: string[];
+  seed_urls_count: number;
+  unique_hosts_count: number;
+  path: string;
+};
+
 export type RadiographyViewController = {
   hasValidSpec: boolean;
   hasSeedUrls: boolean;
@@ -32,10 +44,17 @@ export type RadiographyViewController = {
   latestRunSummary: RunSummary | null;
   runLogWarning: string | null;
   isLatestRunLogOpen: boolean;
+  runLogViewerTitle: string;
   latestRunLogText: string;
+  runLogList: RunLogListItem[];
+  isRunLogListLoading: boolean;
+  runLogListError: string | null;
   handleExportRadiography: () => void;
   handleOpenLatestRunLog: () => Promise<void>;
   handleDownloadLatestRunLog: () => Promise<void>;
+  handleRefreshRunLogs: () => Promise<void>;
+  handleOpenRunLogById: (runId: string) => Promise<void>;
+  handleDownloadRunLogById: (runId: string) => Promise<void>;
   handleCloseLatestRunLog: () => void;
 };
 
@@ -98,6 +117,66 @@ const parseLatestRunLogResponse = (body: unknown): RadiographyRunLog | null => {
   return parsed.success ? parsed.data : null;
 };
 
+const parseRunLogResponse = (
+  body: unknown
+): { runlog: RadiographyRunLog | null; reason: string | null } => {
+  if (!body || typeof body !== "object") {
+    return { runlog: null, reason: "invalid" };
+  }
+
+  const maybe = body as { ok?: unknown; runlog?: unknown; reason?: unknown };
+  if (maybe.ok !== true) {
+    return {
+      runlog: null,
+      reason: typeof maybe.reason === "string" ? maybe.reason : "invalid"
+    };
+  }
+
+  const parsed = RadiographyRunLogV0Schema.safeParse(maybe.runlog);
+  if (!parsed.success) {
+    return { runlog: null, reason: "invalid" };
+  }
+  return { runlog: parsed.data, reason: null };
+};
+
+const isRunLogListItem = (value: unknown): value is RunLogListItem => {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const item = value as Record<string, unknown>;
+  return (
+    typeof item.run_id === "string" &&
+    typeof item.created_at === "string" &&
+    typeof item.duration_ms === "number" &&
+    (item.status === "pass" || item.status === "soft_fail" || item.status === "hard_fail") &&
+    typeof item.core_percent === "number" &&
+    Array.isArray(item.reason_codes) &&
+    item.reason_codes.every((code) => typeof code === "string") &&
+    typeof item.seed_urls_count === "number" &&
+    typeof item.unique_hosts_count === "number" &&
+    typeof item.path === "string"
+  );
+};
+
+const parseRunLogListResponse = (
+  body: unknown
+): { ok: true; items: RunLogListItem[] } | { ok: false } => {
+  if (!body || typeof body !== "object") {
+    return { ok: false };
+  }
+
+  const maybe = body as { ok?: unknown; items?: unknown };
+  if (maybe.ok !== true || !Array.isArray(maybe.items)) {
+    return { ok: false };
+  }
+
+  return {
+    ok: true,
+    items: maybe.items.filter(isRunLogListItem)
+  };
+};
+
 export const useRadiographyView = ({
   validation,
   radiographyInputs,
@@ -105,7 +184,11 @@ export const useRadiographyView = ({
 }: UseRadiographyViewArgs): RadiographyViewController => {
   const [runLogWarning, setRunLogWarning] = useState<string | null>(null);
   const [isLatestRunLogOpen, setIsLatestRunLogOpen] = useState(false);
+  const [runLogViewerTitle, setRunLogViewerTitle] = useState("Latest Run Log");
   const [latestRunLogText, setLatestRunLogText] = useState("");
+  const [runLogList, setRunLogList] = useState<RunLogListItem[]>([]);
+  const [isRunLogListLoading, setIsRunLogListLoading] = useState(false);
+  const [runLogListError, setRunLogListError] = useState<string | null>(null);
 
   const hasValidSpec = validation.ok && validation.spec.capabilities.length > 0;
   const hasSeedUrls = seedUrls.length > 0;
@@ -235,6 +318,38 @@ export const useRadiographyView = ({
     };
   }, [radiographyInputs, radiographyView, seedUrls, validation]);
 
+  const fetchRunLogList = useCallback(async (limit = 20) => {
+    setIsRunLogListLoading(true);
+    setRunLogListError(null);
+
+    try {
+      const response = await fetch(`/api/radiography/runlog?limit=${limit}`, {
+        cache: "no-store"
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch run log list");
+      }
+
+      const body = (await response.json()) as unknown;
+      const parsed = parseRunLogListResponse(body);
+      if (!parsed.ok) {
+        throw new Error("Invalid run log list response");
+      }
+
+      setRunLogList(parsed.items);
+      setRunLogListError(null);
+    } catch {
+      setRunLogListError("Unable to load run logs.");
+    } finally {
+      setIsRunLogListLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void fetchRunLogList();
+  }, [fetchRunLogList]);
+
   useEffect(() => {
     if (!currentRunLog) {
       return;
@@ -262,6 +377,7 @@ export const useRadiographyView = ({
 
         if (mounted) {
           setRunLogWarning(null);
+          void fetchRunLogList();
         }
       } catch {
         if (mounted) {
@@ -273,7 +389,7 @@ export const useRadiographyView = ({
     return () => {
       mounted = false;
     };
-  }, [currentRunLog, seedUrls]);
+  }, [currentRunLog, fetchRunLogList, seedUrls]);
 
   const latestRunSummary = currentRunLog
     ? {
@@ -296,9 +412,25 @@ export const useRadiographyView = ({
     return parseLatestRunLogResponse(body);
   };
 
+  const readRunLogById = async (
+    runId: string
+  ): Promise<{ runlog: RadiographyRunLog | null; reason: string | null }> => {
+    const response = await fetch(`/api/radiography/runlog/${encodeURIComponent(runId)}`, {
+      cache: "no-store"
+    });
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch run log");
+    }
+
+    const body = (await response.json()) as unknown;
+    return parseRunLogResponse(body);
+  };
+
   const handleOpenLatestRunLog = async () => {
     try {
       const latest = await readLatestRunLog();
+      setRunLogViewerTitle("Latest Run Log");
       if (!latest) {
         setLatestRunLogText("No run logs yet.\n");
       } else {
@@ -324,6 +456,44 @@ export const useRadiographyView = ({
     }
   };
 
+  const handleRefreshRunLogs = async () => {
+    await fetchRunLogList();
+  };
+
+  const handleOpenRunLogById = async (runId: string) => {
+    try {
+      const result = await readRunLogById(runId);
+      setRunLogViewerTitle(`Run Log ${runId}`);
+      if (!result.runlog) {
+        if (result.reason === "not_found") {
+          setLatestRunLogText("Run log not found.\n");
+        } else {
+          setLatestRunLogText("Run log is invalid.\n");
+        }
+      } else {
+        setLatestRunLogText(`${JSON.stringify(result.runlog, null, 2)}\n`);
+      }
+      setIsLatestRunLogOpen(true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load run log";
+      setRunLogViewerTitle(`Run Log ${runId}`);
+      setLatestRunLogText(`${message}\n`);
+      setIsLatestRunLogOpen(true);
+    }
+  };
+
+  const handleDownloadRunLogById = async (runId: string) => {
+    try {
+      const result = await readRunLogById(runId);
+      if (!result.runlog) {
+        return;
+      }
+      downloadJson(`radiography-runlog-${result.runlog.run_id}.json`, result.runlog);
+    } catch {
+      // Keep UI deterministic; failures should not break other Studio actions.
+    }
+  };
+
   const handleCloseLatestRunLog = () => {
     setIsLatestRunLogOpen(false);
   };
@@ -345,10 +515,17 @@ export const useRadiographyView = ({
     latestRunSummary,
     runLogWarning: canRunRadiography ? runLogWarning : null,
     isLatestRunLogOpen,
+    runLogViewerTitle,
     latestRunLogText,
+    runLogList,
+    isRunLogListLoading,
+    runLogListError,
     handleExportRadiography,
     handleOpenLatestRunLog,
     handleDownloadLatestRunLog,
+    handleRefreshRunLogs,
+    handleOpenRunLogById,
+    handleDownloadRunLogById,
     handleCloseLatestRunLog
   };
 };

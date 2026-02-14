@@ -1,3 +1,4 @@
+import "server-only";
 import { mkdir, readdir, readFile, stat, writeFile } from "fs/promises";
 import path from "path";
 import {
@@ -13,8 +14,72 @@ export const RUNLOG_PATHS = {
   dir: RUNLOG_DIR
 } as const;
 
+type RunLogDirectoryEntry = {
+  fileName: string;
+  filePath: string;
+  mtimeMs: number;
+};
+
+export type RunLogSummary = {
+  run_id: string;
+  created_at: string;
+  duration_ms: number;
+  status: "pass" | "soft_fail" | "hard_fail";
+  core_percent: number;
+  reason_codes: string[];
+  seed_urls_count: number;
+  unique_hosts_count: number;
+  path: string;
+};
+
+const RUN_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
 const ensureRunLogDir = async () => {
   await mkdir(RUNLOG_DIR, { recursive: true });
+};
+
+const toRunLogSummary = (
+  runlog: RadiographyRunLogV0,
+  filePath: string
+): RunLogSummary => {
+  return {
+    run_id: runlog.run_id,
+    created_at: runlog.created_at,
+    duration_ms: runlog.duration_ms,
+    status: runlog.outputs.gating_decision.status,
+    core_percent: runlog.outputs.gating_decision.core_percent,
+    reason_codes: runlog.outputs.gating_decision.reason_codes,
+    seed_urls_count: runlog.inputs.seed_urls.count,
+    unique_hosts_count: runlog.inputs.seed_urls.unique_hosts.length,
+    path: filePath
+  };
+};
+
+const listRunLogFiles = async (): Promise<RunLogDirectoryEntry[]> => {
+  await ensureRunLogDir();
+  const fileNames = (await readdir(RUNLOG_DIR))
+    .filter((fileName) => fileName.endsWith(".json"))
+    .sort();
+
+  const entries = await Promise.all(
+    fileNames.map(async (fileName): Promise<RunLogDirectoryEntry | null> => {
+      const filePath = path.join(RUNLOG_DIR, fileName);
+      try {
+        const fileStat = await stat(filePath);
+        return {
+          fileName,
+          filePath,
+          mtimeMs: fileStat.mtimeMs
+        };
+      } catch {
+        return null;
+      }
+    })
+  );
+
+  return entries
+    .filter((entry): entry is RunLogDirectoryEntry => entry !== null)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs || a.fileName.localeCompare(b.fileName));
 };
 
 export const writeRunLog = async (runlog: RadiographyRunLogV0) => {
@@ -26,28 +91,11 @@ export const writeRunLog = async (runlog: RadiographyRunLogV0) => {
 };
 
 const getLatestRunLogFile = async (): Promise<string | null> => {
-  await ensureRunLogDir();
-  const files = (await readdir(RUNLOG_DIR)).filter((fileName) =>
-    fileName.endsWith(".json")
-  );
-
-  if (files.length === 0) {
+  const entries = await listRunLogFiles();
+  if (entries.length === 0) {
     return null;
   }
-
-  let latestFile: string | null = null;
-  let latestMtime = 0;
-
-  for (const fileName of files) {
-    const filePath = path.join(RUNLOG_DIR, fileName);
-    const fileStat = await stat(filePath);
-    if (fileStat.mtimeMs > latestMtime) {
-      latestMtime = fileStat.mtimeMs;
-      latestFile = filePath;
-    }
-  }
-
-  return latestFile;
+  return entries[0]?.filePath ?? null;
 };
 
 export const readLatestRunLog = async (): Promise<RadiographyRunLogV0 | null> => {
@@ -59,4 +107,69 @@ export const readLatestRunLog = async (): Promise<RadiographyRunLogV0 | null> =>
   const jsonText = await readFile(filePath, "utf8");
   const parsed = JSON.parse(jsonText) as unknown;
   return RadiographyRunLogV0Schema.parse(parsed);
+};
+
+export const listRunLogs = async (limit: number): Promise<RunLogSummary[]> => {
+  const normalizedLimit = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
+  if (normalizedLimit === 0) {
+    return [];
+  }
+
+  const entries = await listRunLogFiles();
+  const items: RunLogSummary[] = [];
+
+  for (const entry of entries) {
+    if (items.length >= normalizedLimit) {
+      break;
+    }
+
+    try {
+      const jsonText = await readFile(entry.filePath, "utf8");
+      const parsed = JSON.parse(jsonText) as unknown;
+      const runlog = RadiographyRunLogV0Schema.safeParse(parsed);
+      if (!runlog.success) {
+        continue;
+      }
+      items.push(toRunLogSummary(runlog.data, entry.filePath));
+    } catch {
+      // Skip invalid or unreadable files; list endpoint should be resilient.
+    }
+  }
+
+  return items;
+};
+
+type ReadRunLogByIdResult =
+  | { ok: true; runlog: RadiographyRunLogV0 }
+  | { ok: false; reason: "not_found" | "invalid" };
+
+export const readRunLogById = async (run_id: string): Promise<ReadRunLogByIdResult> => {
+  if (!RUN_ID_PATTERN.test(run_id)) {
+    return { ok: false, reason: "invalid" };
+  }
+
+  await ensureRunLogDir();
+  const filePath = path.join(RUNLOG_DIR, `${run_id}.json`);
+
+  let jsonText: string;
+  try {
+    jsonText = await readFile(filePath, "utf8");
+  } catch (error) {
+    const maybeCode = (error as { code?: string }).code;
+    if (maybeCode === "ENOENT") {
+      return { ok: false, reason: "not_found" };
+    }
+    return { ok: false, reason: "invalid" };
+  }
+
+  try {
+    const parsed = JSON.parse(jsonText) as unknown;
+    const runlog = RadiographyRunLogV0Schema.safeParse(parsed);
+    if (!runlog.success) {
+      return { ok: false, reason: "invalid" };
+    }
+    return { ok: true, runlog: runlog.data };
+  } catch {
+    return { ok: false, reason: "invalid" };
+  }
 };

@@ -6,6 +6,18 @@ type RunSummary = {
   duration_ms: number;
 };
 
+type RunLogListItem = {
+  run_id: string;
+  created_at: string;
+  duration_ms: number;
+  status: "pass" | "soft_fail" | "hard_fail";
+  core_percent: number;
+  reason_codes: string[];
+  seed_urls_count: number;
+  unique_hosts_count: number;
+  path: string;
+};
+
 type RadiographyPanelProps = {
   hasValidSpec: boolean;
   hasSeedUrls: boolean;
@@ -14,10 +26,17 @@ type RadiographyPanelProps = {
   latestRunSummary: RunSummary | null;
   runLogWarning: string | null;
   isLatestRunLogOpen: boolean;
+  runLogViewerTitle: string;
   latestRunLogText: string;
+  runLogList: RunLogListItem[];
+  isRunLogListLoading: boolean;
+  runLogListError: string | null;
   onExportRadiography: () => void;
   onOpenLatestRunLog: () => Promise<void>;
   onDownloadLatestRunLog: () => Promise<void>;
+  onRefreshRunLogs: () => Promise<void>;
+  onOpenRunLogById: (runId: string) => Promise<void>;
+  onDownloadRunLogById: (runId: string) => Promise<void>;
   onCloseLatestRunLog: () => void;
 };
 
@@ -29,10 +48,17 @@ export function RadiographyPanel({
   latestRunSummary,
   runLogWarning,
   isLatestRunLogOpen,
+  runLogViewerTitle,
   latestRunLogText,
+  runLogList,
+  isRunLogListLoading,
+  runLogListError,
   onExportRadiography,
   onOpenLatestRunLog,
   onDownloadLatestRunLog,
+  onRefreshRunLogs,
+  onOpenRunLogById,
+  onDownloadRunLogById,
   onCloseLatestRunLog
 }: RadiographyPanelProps) {
   return (
@@ -101,6 +127,94 @@ export function RadiographyPanel({
             </button>
           </div>
 
+          <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/50 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-zinc-200">Run Logs</div>
+              <button
+                type="button"
+                onClick={() => {
+                  void onRefreshRunLogs();
+                }}
+                className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500"
+              >
+                {isRunLogListLoading ? "Refreshing..." : "Refresh"}
+              </button>
+            </div>
+
+            {runLogListError ? (
+              <div className="mt-2 text-xs text-amber-300">{runLogListError}</div>
+            ) : null}
+
+            <div className="mt-2 overflow-x-auto">
+              <table className="min-w-full border-collapse text-xs text-zinc-300">
+                <thead>
+                  <tr className="border-b border-zinc-800 text-left text-zinc-400">
+                    <th className="px-2 py-1">created_at</th>
+                    <th className="px-2 py-1">run_id</th>
+                    <th className="px-2 py-1">status</th>
+                    <th className="px-2 py-1">core_percent</th>
+                    <th className="px-2 py-1">seed_urls_count</th>
+                    <th className="px-2 py-1">unique_hosts_count</th>
+                    <th className="px-2 py-1">duration_ms</th>
+                    <th className="px-2 py-1">reason_codes</th>
+                    <th className="px-2 py-1">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {runLogList.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="px-2 py-2 text-zinc-500">
+                        No run logs found.
+                      </td>
+                    </tr>
+                  ) : (
+                    runLogList.map((item) => {
+                      const topReasonCodes = item.reason_codes.slice(0, 2);
+                      return (
+                        <tr key={item.run_id} className="border-b border-zinc-900/80">
+                          <td className="px-2 py-1 align-top">{item.created_at}</td>
+                          <td className="px-2 py-1 align-top font-mono text-[11px] text-zinc-200">
+                            {item.run_id}
+                          </td>
+                          <td className="px-2 py-1 align-top">{item.status}</td>
+                          <td className="px-2 py-1 align-top">{item.core_percent}</td>
+                          <td className="px-2 py-1 align-top">{item.seed_urls_count}</td>
+                          <td className="px-2 py-1 align-top">{item.unique_hosts_count}</td>
+                          <td className="px-2 py-1 align-top">{item.duration_ms}</td>
+                          <td className="px-2 py-1 align-top">
+                            {topReasonCodes.length > 0 ? topReasonCodes.join(", ") : "n/a"}
+                          </td>
+                          <td className="px-2 py-1 align-top">
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void onOpenRunLogById(item.run_id);
+                                }}
+                                className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500"
+                              >
+                                Open
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void onDownloadRunLogById(item.run_id);
+                                }}
+                                className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500"
+                              >
+                                Download
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           {runLogWarning ? (
             <div className="mt-2 rounded-md border border-amber-700 bg-amber-950/30 px-2 py-1 text-xs text-amber-300">
               {runLogWarning}
@@ -162,7 +276,7 @@ export function RadiographyPanel({
           {isLatestRunLogOpen ? (
             <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/50 p-3">
               <div className="mb-2 flex items-center justify-between">
-                <span className="text-zinc-200">Latest Run Log</span>
+                <span className="text-zinc-200">{runLogViewerTitle}</span>
                 <button
                   type="button"
                   onClick={onCloseLatestRunLog}

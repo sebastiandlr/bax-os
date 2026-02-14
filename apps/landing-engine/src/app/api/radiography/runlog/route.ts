@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { RadiographyRunLogV0Schema } from "@bax/radiography-contract";
-import { writeRunLog } from "@/lib/radiography/runlogStorage";
+import { listRunLogs, writeRunLog } from "@/lib/radiography/runlogStorage";
 
 export const runtime = "nodejs";
 
@@ -31,6 +31,17 @@ const createRunId = (): string => {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 };
 
+const parseListLimit = (value: string | null): number => {
+  if (!value) {
+    return 20;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 20;
+  }
+  return Math.min(parsed, 100);
+};
+
 const normalizeSeedUrls = (seedUrlsRaw: string[]): string[] => {
   return seedUrlsRaw.map((url) => url.trim()).filter((url) => url.length > 0);
 };
@@ -49,6 +60,19 @@ const parseUniqueHosts = (seedUrls: string[]): string[] => {
   }
   return [...hosts].sort();
 };
+
+export async function GET(request: Request) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const limit = parseListLimit(searchParams.get("limit"));
+    const items = await listRunLogs(limit);
+    return NextResponse.json({ ok: true, items });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Failed to list runlogs";
+    return NextResponse.json({ ok: false, reason: "error", error: message }, { status: 500 });
+  }
+}
 
 export async function POST(request: Request) {
   let body: unknown;
