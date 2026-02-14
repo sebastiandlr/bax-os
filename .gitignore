@@ -107,6 +107,7 @@ dist
 # Local BuildSpec overrides
 apps/landing-engine/buildspec.local.json
 apps/landing-engine/src/content/specs/buildspec.local.json
+apps/landing-engine/.bax/
 
 # Docusaurus cache and generated files
 .docusaurus

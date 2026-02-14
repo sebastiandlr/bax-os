@@ -1,5 +1,8 @@
 import type { BuildSpecV0, BuildSpecV0CapabilityId } from "@bax/buildspec";
-import type { RadiographyOutputV0 } from "@bax/radiography-contract";
+import type {
+  RadiographyOutputV0,
+  RadiographyRunLogV0
+} from "@bax/radiography-contract";
 
 export type Source = "local" | "example";
 export type Tab = "form" | "json";
@@ -22,5 +25,6 @@ export type RadiographyInputsState = {
 };
 
 export type RadiographyView = RadiographyOutputV0;
+export type RadiographyRunLog = RadiographyRunLogV0;
 
 export type LoadSpecSource = "default" | "example";

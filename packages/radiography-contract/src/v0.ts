@@ -206,3 +206,90 @@ export const RadiographyOutputV0Schema = z
   })
   .strict();
 export type RadiographyOutputV0 = z.infer<typeof RadiographyOutputV0Schema>;
+
+export const RADIOGRAPHY_RUNLOG_V0_VERSION = "0.1.0" as const;
+
+const RadiographyRunLogSeedUrlsV0Schema = z
+  .object({
+    count: z.number().int().nonnegative(),
+    unique_hosts: z.array(z.string().min(1)),
+    url_hashes: z.array(z.string().min(1))
+  })
+  .strict();
+
+const RadiographyRunLogInputsV0Schema = z
+  .object({
+    contractVersion: z.literal(RADIOGRAPHY_CONTRACT_V0_VERSION),
+    business_name: z.string().min(1),
+    city: z.string().min(1),
+    country: z.string().min(1),
+    language: z.string().min(2),
+    mode_hint: z.enum(["lead", "booking", "quote"]),
+    seed_urls: RadiographyRunLogSeedUrlsV0Schema
+  })
+  .strict();
+
+const RadiographyRunLogBuildSpecV0Schema = z
+  .object({
+    schemaVersion: z.string().min(1),
+    eventSchemaVersion: z.string().min(1),
+    mode: z.string().min(1),
+    capabilities: z.array(z.string().min(1)),
+    metadata: z
+      .object({
+        clientId: z.string().min(1).optional(),
+        siteId: z.string().min(1).optional()
+      })
+      .strict()
+      .optional()
+  })
+  .strict();
+
+const RadiographyRunLogOutputsV0Schema = z
+  .object({
+    gating_decision: z
+      .object({
+        status: z.enum(["pass", "soft_fail", "hard_fail"]),
+        core_percent: z.number().min(0).max(100),
+        reason_codes: z.array(ReasonCodeV0Enum)
+      })
+      .strict(),
+    lint_report: z
+      .object({
+        items_count: z.number().int().nonnegative(),
+        hard_count: z.number().int().nonnegative(),
+        warn_count: z.number().int().nonnegative(),
+        top_reason_codes: z.array(ReasonCodeV0Enum)
+      })
+      .strict(),
+    patch_stats: z
+      .object({
+        ops_count: z.number().int().nonnegative()
+      })
+      .strict(),
+    provenance_coverage_percent: z.number().min(0).max(100)
+  })
+  .strict();
+
+export const RadiographyRunLogV0Schema = z
+  .object({
+    runlog_version: z.literal(RADIOGRAPHY_RUNLOG_V0_VERSION),
+    run_id: z.string().min(1),
+    created_at: z.string().datetime(),
+    duration_ms: z.number().int().nonnegative(),
+    inputs: RadiographyRunLogInputsV0Schema,
+    buildspec: RadiographyRunLogBuildSpecV0Schema,
+    outputs: RadiographyRunLogOutputsV0Schema,
+    errors: z
+      .array(
+        z
+          .object({
+            message: z.string().min(1),
+            stack: z.string().min(1).optional()
+          })
+          .strict()
+      )
+      .optional()
+  })
+  .strict();
+export type RadiographyRunLogV0 = z.infer<typeof RadiographyRunLogV0Schema>;

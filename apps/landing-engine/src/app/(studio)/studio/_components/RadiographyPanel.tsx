@@ -1,11 +1,23 @@
 import type { RadiographyView } from "../_lib/types";
 
+type RunSummary = {
+  run_id: string;
+  created_at: string;
+  duration_ms: number;
+};
+
 type RadiographyPanelProps = {
   hasValidSpec: boolean;
   hasSeedUrls: boolean;
   canRunRadiography: boolean;
   radiographyView: RadiographyView | null;
+  latestRunSummary: RunSummary | null;
+  isLatestRunLogOpen: boolean;
+  latestRunLogText: string;
   onExportRadiography: () => void;
+  onOpenLatestRunLog: () => Promise<void>;
+  onDownloadLatestRunLog: () => Promise<void>;
+  onCloseLatestRunLog: () => void;
 };
 
 export function RadiographyPanel({
@@ -13,7 +25,13 @@ export function RadiographyPanel({
   hasSeedUrls,
   canRunRadiography,
   radiographyView,
-  onExportRadiography
+  latestRunSummary,
+  isLatestRunLogOpen,
+  latestRunLogText,
+  onExportRadiography,
+  onOpenLatestRunLog,
+  onDownloadLatestRunLog,
+  onCloseLatestRunLog
 }: RadiographyPanelProps) {
   return (
     <>
@@ -44,6 +62,43 @@ export function RadiographyPanel({
               Export Radiography JSON
             </button>
           </div>
+
+          <div className="mt-2 text-zinc-400">
+            last_run_id:{" "}
+            <span className="text-zinc-200">{latestRunSummary?.run_id ?? "n/a"}</span>
+          </div>
+          <div className="mt-1 text-zinc-400">
+            created_at:{" "}
+            <span className="text-zinc-200">{latestRunSummary?.created_at ?? "n/a"}</span>
+          </div>
+          <div className="mt-1 text-zinc-400">
+            duration_ms:{" "}
+            <span className="text-zinc-200">
+              {latestRunSummary ? latestRunSummary.duration_ms : "n/a"}
+            </span>
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                void onOpenLatestRunLog();
+              }}
+              className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500"
+            >
+              Open Latest Run Log
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void onDownloadLatestRunLog();
+              }}
+              className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500"
+            >
+              Download Latest Run Log
+            </button>
+          </div>
+
           <div className="mt-1 text-zinc-400">
             contractVersion:{" "}
             <span className="text-zinc-200">
@@ -95,6 +150,26 @@ export function RadiographyPanel({
             <span className="text-zinc-200">{radiographyView.composer_preset.mode}</span>{" "}
             ({radiographyView.composer_preset.capabilities.length} capabilities)
           </div>
+
+          {isLatestRunLogOpen ? (
+            <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/50 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-zinc-200">Latest Run Log</span>
+                <button
+                  type="button"
+                  onClick={onCloseLatestRunLog}
+                  className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500"
+                >
+                  Close
+                </button>
+              </div>
+              <textarea
+                readOnly
+                value={latestRunLogText}
+                className="min-h-[220px] w-full rounded-md border border-zinc-700 bg-zinc-950 p-2 font-mono text-xs text-zinc-200"
+              />
+            </div>
+          ) : null}
         </div>
       ) : null}
     </>
