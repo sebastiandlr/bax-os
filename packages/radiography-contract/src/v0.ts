@@ -212,8 +212,17 @@ export const RADIOGRAPHY_RUNLOG_V0_VERSION = "0.1.0" as const;
 const RadiographyRunLogSeedUrlsV0Schema = z
   .object({
     count: z.number().int().nonnegative(),
-    unique_hosts: z.array(z.string().min(1)),
-    url_hashes: z.array(z.string().min(1))
+    unique_hosts: z.array(
+      z
+        .string()
+        .min(1)
+        .regex(/^[^\/?#\s]+$/)
+    ),
+    url_hashes: z.array(
+      z
+        .string()
+        .regex(/^[a-f0-9]{64}$/)
+    )
   })
   .strict();
 
@@ -274,7 +283,7 @@ const RadiographyRunLogOutputsV0Schema = z
 export const RadiographyRunLogV0Schema = z
   .object({
     runlog_version: z.literal(RADIOGRAPHY_RUNLOG_V0_VERSION),
-    run_id: z.string().min(1),
+    run_id: z.string().min(1).regex(/^[a-z0-9-]+$/i),
     created_at: z.string().datetime(),
     duration_ms: z.number().int().nonnegative(),
     inputs: RadiographyRunLogInputsV0Schema,

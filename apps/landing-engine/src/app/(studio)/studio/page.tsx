@@ -103,6 +103,7 @@ export default function StudioPage() {
               canRunRadiography={radiography.canRunRadiography}
               radiographyView={radiography.radiographyView}
               latestRunSummary={radiography.latestRunSummary}
+              runLogWarning={radiography.runLogWarning}
               isLatestRunLogOpen={radiography.isLatestRunLogOpen}
               latestRunLogText={radiography.latestRunLogText}
               onExportRadiography={radiography.handleExportRadiography}

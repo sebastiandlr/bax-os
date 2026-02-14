@@ -12,6 +12,7 @@ type RadiographyPanelProps = {
   canRunRadiography: boolean;
   radiographyView: RadiographyView | null;
   latestRunSummary: RunSummary | null;
+  runLogWarning: string | null;
   isLatestRunLogOpen: boolean;
   latestRunLogText: string;
   onExportRadiography: () => void;
@@ -26,6 +27,7 @@ export function RadiographyPanel({
   canRunRadiography,
   radiographyView,
   latestRunSummary,
+  runLogWarning,
   isLatestRunLogOpen,
   latestRunLogText,
   onExportRadiography,
@@ -98,6 +100,12 @@ export function RadiographyPanel({
               Download Latest Run Log
             </button>
           </div>
+
+          {runLogWarning ? (
+            <div className="mt-2 rounded-md border border-amber-700 bg-amber-950/30 px-2 py-1 text-xs text-amber-300">
+              {runLogWarning}
+            </div>
+          ) : null}
 
           <div className="mt-1 text-zinc-400">
             contractVersion:{" "}

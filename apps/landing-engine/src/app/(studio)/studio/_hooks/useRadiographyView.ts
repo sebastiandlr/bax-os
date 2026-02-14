@@ -30,6 +30,7 @@ export type RadiographyViewController = {
   radiographyView: RadiographyView | null;
   currentRunLog: RadiographyRunLog | null;
   latestRunSummary: RunSummary | null;
+  runLogWarning: string | null;
   isLatestRunLogOpen: boolean;
   latestRunLogText: string;
   handleExportRadiography: () => void;
@@ -38,17 +39,8 @@ export type RadiographyViewController = {
   handleCloseLatestRunLog: () => void;
 };
 
-const fnv1a = (value: string, seed: number): string => {
-  let hash = seed;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
-};
-
-const hashUrlDeterministic = (url: string): string => {
-  return `${fnv1a(url, 0x811c9dc5)}${fnv1a(url, 0x9e3779b1)}`;
+const createRunId = (): string => {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 };
 
 const parseUniqueHosts = (seedUrls: string[]): string[] => {
@@ -63,7 +55,7 @@ const parseUniqueHosts = (seedUrls: string[]): string[] => {
       // Ignore invalid URL strings for host extraction.
     }
   }
-  return [...hosts];
+  return [...hosts].sort();
 };
 
 const getTopReasonCodes = (view: RadiographyView): ReasonCodeV0[] => {
@@ -111,6 +103,7 @@ export const useRadiographyView = ({
   radiographyInputs,
   seedUrls
 }: UseRadiographyViewArgs): RadiographyViewController => {
+  const [runLogWarning, setRunLogWarning] = useState<string | null>(null);
   const [isLatestRunLogOpen, setIsLatestRunLogOpen] = useState(false);
   const [latestRunLogText, setLatestRunLogText] = useState("");
 
@@ -162,7 +155,7 @@ export const useRadiographyView = ({
           }
         ],
         run_metadata: {
-          run_id: "00000000-0000-4000-8000-000000000000",
+          run_id: createRunId(),
           duration_ms: 0,
           source_types_used: ["manual"],
           unknown_fields_count: 0,
@@ -202,7 +195,7 @@ export const useRadiographyView = ({
 
     return {
       runlog_version: "0.1.0",
-      run_id: radiographyView.run_metadata.run_id,
+      run_id: createRunId(),
       created_at: new Date().toISOString(),
       duration_ms: radiographyView.run_metadata.duration_ms,
       inputs: {
@@ -215,7 +208,7 @@ export const useRadiographyView = ({
         seed_urls: {
           count: seedUrls.length,
           unique_hosts: parseUniqueHosts(seedUrls),
-          url_hashes: seedUrls.map((url) => hashUrlDeterministic(url))
+          url_hashes: []
         }
       },
       buildspec: {
@@ -247,12 +240,40 @@ export const useRadiographyView = ({
       return;
     }
 
-    void fetch("/api/radiography/runlog", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ runlog: currentRunLog })
-    });
-  }, [currentRunLog]);
+    let mounted = true;
+
+    void (async () => {
+      try {
+        const response = await fetch("/api/radiography/runlog", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            runlog: currentRunLog,
+            seed_urls_raw: seedUrls
+          })
+        });
+
+        if (!response.ok) {
+          if (mounted) {
+            setRunLogWarning("Run log persistence failed (best-effort).");
+          }
+          return;
+        }
+
+        if (mounted) {
+          setRunLogWarning(null);
+        }
+      } catch {
+        if (mounted) {
+          setRunLogWarning("Run log persistence failed (best-effort).");
+        }
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, [currentRunLog, seedUrls]);
 
   const latestRunSummary = currentRunLog
     ? {
@@ -322,6 +343,7 @@ export const useRadiographyView = ({
     radiographyView,
     currentRunLog,
     latestRunSummary,
+    runLogWarning: canRunRadiography ? runLogWarning : null,
     isLatestRunLogOpen,
     latestRunLogText,
     handleExportRadiography,
