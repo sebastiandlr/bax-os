@@ -7,6 +7,7 @@ import {
 import type {
   RadiographyInputsState,
   RadiographyRunLog,
+  RunLogListItem,
   RadiographyView,
   ValidationState
 } from "../_lib/types";
@@ -21,18 +22,6 @@ type RunSummary = {
   run_id: string;
   created_at: string;
   duration_ms: number;
-};
-
-export type RunLogListItem = {
-  run_id: string;
-  created_at: string;
-  duration_ms: number;
-  status: "pass" | "soft_fail" | "hard_fail";
-  core_percent: number;
-  reason_codes: string[];
-  seed_urls_count: number;
-  unique_hosts_count: number;
-  path: string;
 };
 
 export type RadiographyViewController = {
@@ -149,13 +138,15 @@ const isRunLogListItem = (value: unknown): value is RunLogListItem => {
     typeof item.run_id === "string" &&
     typeof item.created_at === "string" &&
     typeof item.duration_ms === "number" &&
-    (item.status === "pass" || item.status === "soft_fail" || item.status === "hard_fail") &&
+    (item.status === "pass" ||
+      item.status === "soft_fail" ||
+      item.status === "hard_fail" ||
+      item.status === "blocked") &&
     typeof item.core_percent === "number" &&
     Array.isArray(item.reason_codes) &&
     item.reason_codes.every((code) => typeof code === "string") &&
     typeof item.seed_urls_count === "number" &&
-    typeof item.unique_hosts_count === "number" &&
-    typeof item.path === "string"
+    typeof item.unique_hosts_count === "number"
   );
 };
 

@@ -24,12 +24,11 @@ export type RunLogSummary = {
   run_id: string;
   created_at: string;
   duration_ms: number;
-  status: "pass" | "soft_fail" | "hard_fail";
+  status: "pass" | "soft_fail" | "hard_fail" | "blocked";
   core_percent: number;
   reason_codes: string[];
   seed_urls_count: number;
   unique_hosts_count: number;
-  path: string;
 };
 
 const RUN_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
@@ -38,10 +37,7 @@ const ensureRunLogDir = async () => {
   await mkdir(RUNLOG_DIR, { recursive: true });
 };
 
-const toRunLogSummary = (
-  runlog: RadiographyRunLogV0,
-  filePath: string
-): RunLogSummary => {
+const toRunLogSummary = (runlog: RadiographyRunLogV0): RunLogSummary => {
   return {
     run_id: runlog.run_id,
     created_at: runlog.created_at,
@@ -50,8 +46,7 @@ const toRunLogSummary = (
     core_percent: runlog.outputs.gating_decision.core_percent,
     reason_codes: runlog.outputs.gating_decision.reason_codes,
     seed_urls_count: runlog.inputs.seed_urls.count,
-    unique_hosts_count: runlog.inputs.seed_urls.unique_hosts.length,
-    path: filePath
+    unique_hosts_count: runlog.inputs.seed_urls.unique_hosts.length
   };
 };
 
@@ -130,7 +125,7 @@ export const listRunLogs = async (limit: number): Promise<RunLogSummary[]> => {
       if (!runlog.success) {
         continue;
       }
-      items.push(toRunLogSummary(runlog.data, entry.filePath));
+      items.push(toRunLogSummary(runlog.data));
     } catch {
       // Skip invalid or unreadable files; list endpoint should be resilient.
     }
