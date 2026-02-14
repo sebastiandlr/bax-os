@@ -102,7 +102,14 @@ export default function StudioPage() {
               hasSeedUrls={radiography.hasSeedUrls}
               canRunRadiography={radiography.canRunRadiography}
               radiographyView={radiography.radiographyView}
+              latestRunSummary={radiography.latestRunSummary}
+              runLogWarning={radiography.runLogWarning}
+              isLatestRunLogOpen={radiography.isLatestRunLogOpen}
+              latestRunLogText={radiography.latestRunLogText}
               onExportRadiography={radiography.handleExportRadiography}
+              onOpenLatestRunLog={radiography.handleOpenLatestRunLog}
+              onDownloadLatestRunLog={radiography.handleDownloadLatestRunLog}
+              onCloseLatestRunLog={radiography.handleCloseLatestRunLog}
             />
           </div>
         }
