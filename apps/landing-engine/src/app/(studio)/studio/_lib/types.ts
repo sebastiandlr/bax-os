@@ -27,4 +27,15 @@ export type RadiographyInputsState = {
 export type RadiographyView = RadiographyOutputV0;
 export type RadiographyRunLog = RadiographyRunLogV0;
 
+export type RunLogListItem = {
+  run_id: string;
+  created_at: string;
+  duration_ms: number;
+  status: "pass" | "soft_fail" | "hard_fail" | "blocked";
+  core_percent: number;
+  reason_codes: string[];
+  seed_urls_count: number;
+  unique_hosts_count: number;
+};
+
 export type LoadSpecSource = "default" | "example";
