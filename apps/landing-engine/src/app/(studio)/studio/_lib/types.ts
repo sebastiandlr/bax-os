@@ -1,6 +1,7 @@
 import type { BuildSpecV0, BuildSpecV0CapabilityId } from "@bax/buildspec";
 import type {
   DecisionTraceEntryV0,
+  EvidenceReplayResponseV0,
   RadiographyOutputV0,
   RadiographyRunLogV0
 } from "@bax/radiography-contract";
@@ -120,37 +121,4 @@ export type EvidenceReplayError = {
   status?: number;
 };
 
-export type EvidenceReplayResult = {
-  replay: {
-    run_id: string;
-    gating_decision: {
-      status: "pass" | "soft_fail" | "hard_fail";
-      core_percent: number;
-      reason_codes: string[];
-    };
-    decision_trace: DecisionTraceEntry[];
-  };
-  compare: {
-    baseline_run_id: string;
-    baseline: {
-      status: "pass" | "soft_fail" | "hard_fail";
-      core_percent: number;
-      reason_codes: string[];
-    };
-    match: boolean;
-    diff: {
-      status_changed: boolean;
-      core_percent_delta: number;
-      reason_codes: {
-        added: string[];
-        removed: string[];
-      };
-      integrity_warnings: string[];
-    };
-  };
-  persisted?: {
-    run_id: string;
-    is_stub: true;
-    source: "portable_replay";
-  };
-};
+export type EvidenceReplayResult = EvidenceReplayResponseV0;

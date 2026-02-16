@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { EvidenceReplayResponseV0Schema } from "@bax/radiography-contract";
 import { readRunLogById, writeRunLog } from "@/lib/radiography/runlogStorage";
 import {
   computePortableReplayFromEvidenceBundle,
@@ -107,7 +108,7 @@ export async function POST(request: Request) {
     };
   }
 
-  return NextResponse.json({
+  const successPayload = {
     ok: true,
     replay: {
       run_id: replayResult.result.replay.run_id,
@@ -121,5 +122,12 @@ export async function POST(request: Request) {
       diff: replayResult.result.compare.diff
     },
     ...(persisted ? { persisted } : {})
-  });
+  };
+
+  const parsedSuccessPayload = EvidenceReplayResponseV0Schema.safeParse(successPayload);
+  if (!parsedSuccessPayload.success) {
+    return NextResponse.json({ ok: false, error: "error" }, { status: 500 });
+  }
+
+  return NextResponse.json(parsedSuccessPayload.data);
 }
