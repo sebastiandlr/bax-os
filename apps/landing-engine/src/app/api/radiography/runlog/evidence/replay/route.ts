@@ -115,6 +115,7 @@ export async function POST(request: Request) {
       decision_trace: replayResult.result.replay.decision_trace
     },
     compare: {
+      baseline_run_id: replayResult.result.compare.baseline_run_id,
       baseline: replayResult.result.compare.baseline,
       match: replayResult.result.compare.match,
       diff: replayResult.result.compare.diff

@@ -140,6 +140,7 @@ Error payloads are normalized to:
     "decision_trace": [ ... ]
   },
   "compare": {
+    "baseline_run_id": "run-abc123",
     "baseline": { "status": "...", "core_percent": 0, "reason_codes": [] },
     "match": true,
     "diff": {
@@ -156,6 +157,8 @@ Error payloads are normalized to:
   }
 }
 ```
+
+`compare.baseline_run_id` is always set to `bundle.run_id` for portable replay comparisons, even if that run is not present locally.
 
 - Errors:
   - `400`: invalid body/options

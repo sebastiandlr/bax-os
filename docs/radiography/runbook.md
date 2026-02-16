@@ -95,6 +95,7 @@ Expected:
 
 - `ok: true`
 - `compare.match: true` (if untampered)
+- `compare.baseline_run_id` equals the bundle `run_id`
 
 ## 7) Replay non-strict with tampered bundle
 
@@ -110,6 +111,7 @@ Expected:
 
 - `ok: true`
 - `compare.match: false`
+- `compare.baseline_run_id` equals the tampered bundle `run_id`
 - `compare.diff.integrity_warnings` contains warning ids
 
 ## 8) Persist replay stub

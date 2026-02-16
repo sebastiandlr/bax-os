@@ -131,6 +131,7 @@ export type EvidenceReplayResult = {
     decision_trace: DecisionTraceEntry[];
   };
   compare: {
+    baseline_run_id: string;
     baseline: {
       status: "pass" | "soft_fail" | "hard_fail";
       core_percent: number;
