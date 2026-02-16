@@ -1,5 +1,11 @@
 import { useState } from "react";
-import type { RadiographyView, RunLogListItem } from "../_lib/types";
+import type {
+  EvidenceIndex,
+  RadiographyRunLog,
+  RadiographyView,
+  RunLogDiff,
+  RunLogListItem
+} from "../_lib/types";
 
 type RunSummary = {
   run_id: string;
@@ -12,6 +18,10 @@ type RadiographyPanelProps = {
   hasSeedUrls: boolean;
   canRunRadiography: boolean;
   radiographyView: RadiographyView | null;
+  selectedRunLog: RadiographyRunLog | null;
+  selectedRunEvidence: EvidenceIndex | null;
+  selectedRunEvidenceError: string | null;
+  runLogDiff: RunLogDiff | null;
   latestRunSummary: RunSummary | null;
   runLogWarning: string | null;
   isLatestRunLogOpen: boolean;
@@ -45,6 +55,10 @@ export function RadiographyPanel({
   hasSeedUrls,
   canRunRadiography,
   radiographyView,
+  selectedRunLog,
+  selectedRunEvidence,
+  selectedRunEvidenceError,
+  runLogDiff,
   latestRunSummary,
   runLogWarning,
   isLatestRunLogOpen,
@@ -93,6 +107,25 @@ export function RadiographyPanel({
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter((line) => line.length > 0);
+  };
+
+  const selectedTrace = selectedRunLog?.decision_trace ?? [];
+
+  const formatDelta = (value: number) => {
+    if (value > 0) {
+      return `+${value}`;
+    }
+    return `${value}`;
+  };
+
+  const getSeverityBadgeClass = (severity: "info" | "warn" | "blocker") => {
+    if (severity === "blocker") {
+      return "rounded bg-rose-950/50 px-1.5 py-0.5 text-rose-300";
+    }
+    if (severity === "warn") {
+      return "rounded bg-amber-950/50 px-1.5 py-0.5 text-amber-300";
+    }
+    return "rounded bg-zinc-800 px-1.5 py-0.5 text-zinc-300";
   };
 
   return (
@@ -481,6 +514,151 @@ export function RadiographyPanel({
             <span className="text-zinc-200">{radiographyView.composer_preset.mode}</span>{" "}
             ({radiographyView.composer_preset.capabilities.length} capabilities)
           </div>
+
+          {runLogDiff ? (
+            <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/50 p-3">
+              <div className="text-zinc-200">Diff Summary</div>
+              <div className="mt-2 text-zinc-400">
+                from: <span className="font-mono text-zinc-200">{runLogDiff.from}</span>
+              </div>
+              <div className="mt-1 text-zinc-400">
+                to: <span className="font-mono text-zinc-200">{runLogDiff.to}</span>
+              </div>
+              <div className="mt-2 text-zinc-400">
+                gating:{" "}
+                <span className="text-zinc-200">
+                  {runLogDiff.changes.gating.from.status} ({runLogDiff.changes.gating.from.core_percent})
+                </span>{" "}
+                <span className="text-zinc-500">→</span>{" "}
+                <span className="text-zinc-200">
+                  {runLogDiff.changes.gating.to.status} ({runLogDiff.changes.gating.to.core_percent})
+                </span>
+              </div>
+              <div className="mt-2 text-zinc-300">blockers</div>
+              <div className="mt-1 text-zinc-400">
+                added:{" "}
+                <span className="text-zinc-200">
+                  {runLogDiff.changes.blockers.added.length > 0
+                    ? runLogDiff.changes.blockers.added.join(", ")
+                    : "none"}
+                </span>
+              </div>
+              <div className="mt-1 text-zinc-400">
+                removed:{" "}
+                <span className="text-zinc-200">
+                  {runLogDiff.changes.blockers.removed.length > 0
+                    ? runLogDiff.changes.blockers.removed.join(", ")
+                    : "none"}
+                </span>
+              </div>
+              <div className="mt-2 text-zinc-300">key deltas</div>
+              <div className="mt-1 text-zinc-400">
+                patch_ops_count delta:{" "}
+                <span className="text-zinc-200">
+                  {formatDelta(runLogDiff.changes.patch_ops_count.delta)}
+                </span>
+              </div>
+              <div className="mt-1 text-zinc-400">
+                provenance_coverage delta:{" "}
+                <span className="text-zinc-200">
+                  {formatDelta(runLogDiff.changes.provenance_coverage_percent.delta)}
+                </span>
+              </div>
+              <div className="mt-1 text-zinc-400">
+                lint delta:{" "}
+                <span className="text-zinc-200">
+                  hard {formatDelta(runLogDiff.changes.lint.hard_delta)}, warn{" "}
+                  {formatDelta(runLogDiff.changes.lint.warn_delta)}, items{" "}
+                  {formatDelta(runLogDiff.changes.lint.items_delta)}
+                </span>
+              </div>
+              <div className="mt-2 text-zinc-300">seed hosts</div>
+              <div className="mt-1 text-zinc-400">
+                added:{" "}
+                <span className="text-zinc-200">
+                  {runLogDiff.changes.seed_hosts_changed.added.length > 0
+                    ? runLogDiff.changes.seed_hosts_changed.added.join(", ")
+                    : "none"}
+                </span>
+              </div>
+              <div className="mt-1 text-zinc-400">
+                removed:{" "}
+                <span className="text-zinc-200">
+                  {runLogDiff.changes.seed_hosts_changed.removed.length > 0
+                    ? runLogDiff.changes.seed_hosts_changed.removed.join(", ")
+                    : "none"}
+                </span>
+              </div>
+            </div>
+          ) : null}
+
+          {selectedRunLog ? (
+            <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/50 p-3">
+              <div className="text-zinc-200">Decision Trace</div>
+              <div className="mt-1 font-mono text-[11px] text-zinc-400">
+                run_id: {selectedRunLog.run_id}
+              </div>
+              {selectedTrace.length === 0 ? (
+                <div className="mt-2 text-xs text-zinc-500">No decision trace for this run.</div>
+              ) : (
+                <ul className="mt-2 space-y-2 text-xs text-zinc-300">
+                  {selectedTrace.map((entry, index) => (
+                    <li key={`${entry.code}-${index}`} className="rounded border border-zinc-800 p-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={getSeverityBadgeClass(entry.severity)}>
+                          {entry.severity}
+                        </span>
+                        <span className="font-mono text-zinc-200">{entry.code}</span>
+                      </div>
+                      <div className="mt-1 text-zinc-300">{entry.message}</div>
+                      {entry.evidence_refs && entry.evidence_refs.length > 0 ? (
+                        <div className="mt-1 text-zinc-500">
+                          evidence: {entry.evidence_refs.join(", ")}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ) : null}
+
+          {selectedRunLog ? (
+            <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/50 p-3">
+              <div className="text-zinc-200">Evidence</div>
+              {selectedRunEvidenceError ? (
+                <div className="mt-2 text-xs text-amber-300">{selectedRunEvidenceError}</div>
+              ) : null}
+              {selectedRunEvidence ? (
+                <div className="mt-2 overflow-x-auto">
+                  <table className="min-w-full border-collapse text-xs text-zinc-300">
+                    <thead>
+                      <tr className="border-b border-zinc-800 text-left text-zinc-400">
+                        <th className="px-2 py-1">kind</th>
+                        <th className="px-2 py-1">artifact_id</th>
+                        <th className="px-2 py-1">sha256</th>
+                        <th className="px-2 py-1">bytes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedRunEvidence.artifacts.map((artifact) => (
+                        <tr key={artifact.id} className="border-b border-zinc-900/80">
+                          <td className="px-2 py-1">{artifact.kind}</td>
+                          <td className="px-2 py-1 font-mono text-[11px]">{artifact.id}</td>
+                          <td className="px-2 py-1 font-mono text-[11px]">
+                            {artifact.sha256.slice(0, 12)}
+                          </td>
+                          <td className="px-2 py-1">{artifact.bytes}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="mt-2 text-xs text-zinc-500">No evidence index loaded.</div>
+              )}
+            </div>
+          ) : null}
 
           {isLatestRunLogOpen ? (
             <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/50 p-3">
