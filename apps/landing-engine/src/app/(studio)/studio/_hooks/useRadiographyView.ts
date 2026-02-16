@@ -38,12 +38,15 @@ export type RadiographyViewController = {
   runLogList: RunLogListItem[];
   isRunLogListLoading: boolean;
   runLogListError: string | null;
+  isRunLogPruneLoading: boolean;
+  runLogOpsMessage: string | null;
   handleExportRadiography: () => void;
   handleOpenLatestRunLog: () => Promise<void>;
   handleDownloadLatestRunLog: () => Promise<void>;
   handleRefreshRunLogs: () => Promise<void>;
   handleOpenRunLogById: (runId: string) => Promise<void>;
   handleDownloadRunLogById: (runId: string) => Promise<void>;
+  handlePruneRunLogs: (maxFiles: number, maxAgeDays: number) => Promise<void>;
   handleCloseLatestRunLog: () => void;
 };
 
@@ -146,7 +149,10 @@ const isRunLogListItem = (value: unknown): value is RunLogListItem => {
     Array.isArray(item.reason_codes) &&
     item.reason_codes.every((code) => typeof code === "string") &&
     typeof item.seed_urls_count === "number" &&
-    typeof item.unique_hosts_count === "number"
+    typeof item.unique_hosts_count === "number" &&
+    (item.top_blockers === undefined ||
+      (Array.isArray(item.top_blockers) &&
+        item.top_blockers.every((code) => typeof code === "string")))
   );
 };
 
@@ -180,6 +186,8 @@ export const useRadiographyView = ({
   const [runLogList, setRunLogList] = useState<RunLogListItem[]>([]);
   const [isRunLogListLoading, setIsRunLogListLoading] = useState(false);
   const [runLogListError, setRunLogListError] = useState<string | null>(null);
+  const [isRunLogPruneLoading, setIsRunLogPruneLoading] = useState(false);
+  const [runLogOpsMessage, setRunLogOpsMessage] = useState<string | null>(null);
 
   const hasValidSpec = validation.ok && validation.spec.capabilities.length > 0;
   const hasSeedUrls = seedUrls.length > 0;
@@ -451,6 +459,49 @@ export const useRadiographyView = ({
     await fetchRunLogList();
   };
 
+  const handlePruneRunLogs = async (maxFiles: number, maxAgeDays: number) => {
+    setIsRunLogPruneLoading(true);
+    setRunLogOpsMessage(null);
+
+    try {
+      const response = await fetch("/api/radiography/runlog/prune", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxFiles, maxAgeDays })
+      });
+
+      const body = (await response.json()) as unknown;
+      if (!response.ok || !body || typeof body !== "object") {
+        throw new Error("Prune request failed");
+      }
+
+      const result = body as {
+        ok?: unknown;
+        deleted?: unknown;
+        kept?: unknown;
+        scanned?: unknown;
+      };
+
+      if (
+        result.ok !== true ||
+        typeof result.deleted !== "number" ||
+        typeof result.kept !== "number" ||
+        typeof result.scanned !== "number"
+      ) {
+        throw new Error("Invalid prune response");
+      }
+
+      setRunLogOpsMessage(
+        `Pruned run logs. Deleted ${result.deleted} (Kept ${result.kept}, Scanned ${result.scanned}).`
+      );
+      await fetchRunLogList();
+    } catch {
+      setRunLogOpsMessage("Run log prune failed (non-blocking).");
+    } finally {
+      setIsRunLogPruneLoading(false);
+    }
+  };
+
   const handleOpenRunLogById = async (runId: string) => {
     try {
       const result = await readRunLogById(runId);
@@ -511,12 +562,15 @@ export const useRadiographyView = ({
     runLogList,
     isRunLogListLoading,
     runLogListError,
+    isRunLogPruneLoading,
+    runLogOpsMessage,
     handleExportRadiography,
     handleOpenLatestRunLog,
     handleDownloadLatestRunLog,
     handleRefreshRunLogs,
     handleOpenRunLogById,
     handleDownloadRunLogById,
+    handlePruneRunLogs,
     handleCloseLatestRunLog
   };
 };
