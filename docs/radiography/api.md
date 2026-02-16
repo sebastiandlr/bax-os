@@ -40,7 +40,7 @@ Error payloads are normalized to:
 ```
 
 - Error `500`:
-  - `{ "ok": false, "reason": "error", "error": "..." }`
+  - `{ "ok": false, "error": "error", "message": "..." }`
 
 ## GET `/api/radiography/runlog/[run_id]`
 
@@ -205,4 +205,14 @@ curl -s -X POST "http://localhost:3000/api/radiography/runlog/evidence/replay" \
 curl -s -X POST "http://localhost:3000/api/radiography/runlog/evidence/import" \
   -H "content-type: application/json" \
   -d "$(jq -c '{bundle: .}' /tmp/evidence.bundle.import.json)"
+```
+
+## No-`jq` payload helper examples
+
+```bash
+# Wrap bundle JSON as {"bundle": ...} for replay/import without jq
+node -e "const fs=require('fs');const b=JSON.parse(fs.readFileSync('/tmp/evidence.bundle.json','utf8'));fs.writeFileSync('/tmp/replay-body.json',JSON.stringify({bundle:b}));"
+curl -s -X POST "http://localhost:3000/api/radiography/runlog/evidence/replay" \
+  -H "content-type: application/json" \
+  --data-binary @/tmp/replay-body.json
 ```

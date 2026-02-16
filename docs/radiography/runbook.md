@@ -2,6 +2,12 @@
 
 This runbook validates current evidence portability behavior end-to-end.
 
+Unified error payloads in this runbook use:
+
+```json
+{ "ok": false, "error": "<snake_case>", "...optional": "fields" }
+```
+
 ## Prerequisites
 
 - From repo root:
@@ -20,6 +26,16 @@ curl -s "http://localhost:3000/api/radiography/runlog?limit=20"
 ```
 
 Pick one `run_id` as `SRC_RUN_ID`.
+
+Optional status-semantic checks:
+
+```bash
+# invalid run_id -> 400
+curl -i -s "http://localhost:3000/api/radiography/runlog/.."
+
+# missing run_id -> 404
+curl -i -s "http://localhost:3000/api/radiography/runlog/missing01"
+```
 
 ## 2) Export bundle
 
@@ -46,6 +62,15 @@ curl -s -X POST "http://localhost:3000/api/radiography/runlog/evidence/import" \
 Expected:
 
 - `{ "ok": true, "run_id": "...", "imported": { "artifacts": N } }`
+
+No-`jq` alternative:
+
+```bash
+node -e "const fs=require('fs');const b=JSON.parse(fs.readFileSync('/tmp/rad.bundle.import.json','utf8'));fs.writeFileSync('/tmp/import-body.json',JSON.stringify({bundle:b}));"
+curl -s -X POST "http://localhost:3000/api/radiography/runlog/evidence/import" \
+  -H "content-type: application/json" \
+  --data-binary @/tmp/import-body.json
+```
 
 ## 5) Verify imported stub appears in runlog list
 
