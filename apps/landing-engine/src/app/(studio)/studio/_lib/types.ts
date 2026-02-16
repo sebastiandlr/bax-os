@@ -40,4 +40,30 @@ export type RunLogListItem = {
   top_blockers?: ReasonCodeV0[];
 };
 
+export type RunLogDiff = {
+  ok: true;
+  from: string;
+  to: string;
+  changes: {
+    gating: {
+      from: {
+        status: "pass" | "soft_fail" | "hard_fail";
+        core_percent: number;
+        reason_codes: string[];
+      };
+      to: {
+        status: "pass" | "soft_fail" | "hard_fail";
+        core_percent: number;
+        reason_codes: string[];
+      };
+    };
+    blockers: { added: string[]; removed: string[] };
+    patch_ops_count: { from: number; to: number; delta: number };
+    provenance_coverage_percent: { from: number; to: number; delta: number };
+    lint: { hard_delta: number; warn_delta: number; items_delta: number };
+    capabilities_changed: { added: string[]; removed: string[] };
+    seed_hosts_changed: { added: string[]; removed: string[] };
+  };
+};
+
 export type LoadSpecSource = "default" | "example";

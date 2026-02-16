@@ -6,6 +6,7 @@ import {
 } from "@bax/radiography-contract";
 import type {
   RadiographyInputsState,
+  RunLogDiff,
   RadiographyRunLog,
   RunLogListItem,
   RadiographyView,
@@ -39,6 +40,8 @@ export type RadiographyViewController = {
   isRunLogListLoading: boolean;
   runLogListError: string | null;
   isRunLogPruneLoading: boolean;
+  isRunLogReplayLoading: boolean;
+  isRunLogDiffLoading: boolean;
   runLogOpsMessage: string | null;
   handleExportRadiography: () => void;
   handleOpenLatestRunLog: () => Promise<void>;
@@ -47,6 +50,12 @@ export type RadiographyViewController = {
   handleOpenRunLogById: (runId: string) => Promise<void>;
   handleDownloadRunLogById: (runId: string) => Promise<void>;
   handlePruneRunLogs: (maxFiles: number, maxAgeDays: number) => Promise<void>;
+  handleReplayRunLog: (
+    runId: string,
+    seedUrlsRaw: string[],
+    mode: "persist" | "dry_run"
+  ) => Promise<void>;
+  handleComputeRunLogDiff: (fromRunId: string, toRunId: string) => Promise<void>;
   handleCloseLatestRunLog: () => void;
 };
 
@@ -174,6 +183,27 @@ const parseRunLogListResponse = (
   };
 };
 
+const parseRunLogDiffResponse = (body: unknown): RunLogDiff | null => {
+  if (!body || typeof body !== "object") {
+    return null;
+  }
+
+  const value = body as Record<string, unknown>;
+  if (value.ok !== true) {
+    return null;
+  }
+
+  if (typeof value.from !== "string" || typeof value.to !== "string") {
+    return null;
+  }
+
+  if (!value.changes || typeof value.changes !== "object") {
+    return null;
+  }
+
+  return value as RunLogDiff;
+};
+
 export const useRadiographyView = ({
   validation,
   radiographyInputs,
@@ -187,6 +217,8 @@ export const useRadiographyView = ({
   const [isRunLogListLoading, setIsRunLogListLoading] = useState(false);
   const [runLogListError, setRunLogListError] = useState<string | null>(null);
   const [isRunLogPruneLoading, setIsRunLogPruneLoading] = useState(false);
+  const [isRunLogReplayLoading, setIsRunLogReplayLoading] = useState(false);
+  const [isRunLogDiffLoading, setIsRunLogDiffLoading] = useState(false);
   const [runLogOpsMessage, setRunLogOpsMessage] = useState<string | null>(null);
 
   const hasValidSpec = validation.ok && validation.spec.capabilities.length > 0;
@@ -502,6 +534,105 @@ export const useRadiographyView = ({
     }
   };
 
+  const handleReplayRunLog = async (
+    runId: string,
+    seedUrlsRaw: string[],
+    mode: "persist" | "dry_run"
+  ) => {
+    setIsRunLogReplayLoading(true);
+    setRunLogOpsMessage(null);
+
+    try {
+      const normalizedSeedUrls = seedUrlsRaw
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0);
+      if (normalizedSeedUrls.length === 0) {
+        setRunLogOpsMessage("Replay blocked: provide at least one seed URL.");
+        return;
+      }
+
+      const response = await fetch("/api/radiography/runlog/replay", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          run_id: runId,
+          seed_urls_override: normalizedSeedUrls,
+          mode
+        })
+      });
+
+      const body = (await response.json()) as unknown;
+      if (!response.ok || !body || typeof body !== "object") {
+        throw new Error("Replay request failed");
+      }
+
+      const result = body as {
+        ok?: unknown;
+        new_run_id?: unknown;
+        runlog?: unknown;
+      };
+
+      if (result.ok !== true || typeof result.new_run_id !== "string") {
+        throw new Error("Replay request failed");
+      }
+
+      setRunLogOpsMessage(
+        `Replay complete: ${result.new_run_id} (${mode === "dry_run" ? "dry-run" : "persisted"}).`
+      );
+
+      const parsedRunlog = RadiographyRunLogV0Schema.safeParse(result.runlog);
+      if (parsedRunlog.success) {
+        setRunLogViewerTitle(`Replay ${parsedRunlog.data.run_id}`);
+        setLatestRunLogText(`${JSON.stringify(parsedRunlog.data, null, 2)}\n`);
+        setIsLatestRunLogOpen(true);
+      }
+
+      if (mode !== "dry_run") {
+        await fetchRunLogList();
+      }
+    } catch {
+      setRunLogOpsMessage("Run log replay failed (non-blocking).");
+    } finally {
+      setIsRunLogReplayLoading(false);
+    }
+  };
+
+  const handleComputeRunLogDiff = async (fromRunId: string, toRunId: string) => {
+    setIsRunLogDiffLoading(true);
+    setRunLogOpsMessage(null);
+
+    try {
+      if (!fromRunId || !toRunId) {
+        setRunLogOpsMessage("Diff blocked: select both run IDs.");
+        return;
+      }
+
+      const response = await fetch(
+        `/api/radiography/runlog/diff?from=${encodeURIComponent(fromRunId)}&to=${encodeURIComponent(toRunId)}`,
+        { cache: "no-store" }
+      );
+
+      const body = (await response.json()) as unknown;
+      if (!response.ok) {
+        throw new Error("Diff request failed");
+      }
+
+      const diff = parseRunLogDiffResponse(body);
+      if (!diff) {
+        throw new Error("Invalid diff response");
+      }
+
+      setRunLogViewerTitle(`RunLog Diff ${diff.from} -> ${diff.to}`);
+      setLatestRunLogText(`${JSON.stringify(diff, null, 2)}\n`);
+      setIsLatestRunLogOpen(true);
+      setRunLogOpsMessage("Run log diff computed.");
+    } catch {
+      setRunLogOpsMessage("Run log diff failed (non-blocking).");
+    } finally {
+      setIsRunLogDiffLoading(false);
+    }
+  };
+
   const handleOpenRunLogById = async (runId: string) => {
     try {
       const result = await readRunLogById(runId);
@@ -563,6 +694,8 @@ export const useRadiographyView = ({
     isRunLogListLoading,
     runLogListError,
     isRunLogPruneLoading,
+    isRunLogReplayLoading,
+    isRunLogDiffLoading,
     runLogOpsMessage,
     handleExportRadiography,
     handleOpenLatestRunLog,
@@ -571,6 +704,8 @@ export const useRadiographyView = ({
     handleOpenRunLogById,
     handleDownloadRunLogById,
     handlePruneRunLogs,
+    handleReplayRunLog,
+    handleComputeRunLogDiff,
     handleCloseLatestRunLog
   };
 };
