@@ -5,6 +5,7 @@ import {
   type ReasonCodeV0
 } from "@bax/radiography-contract";
 import type {
+  EvidenceIndex,
   RadiographyInputsState,
   RunLogDiff,
   RadiographyRunLog,
@@ -31,6 +32,10 @@ export type RadiographyViewController = {
   canRunRadiography: boolean;
   radiographyView: RadiographyView | null;
   currentRunLog: RadiographyRunLog | null;
+  selectedRunLog: RadiographyRunLog | null;
+  selectedRunEvidence: EvidenceIndex | null;
+  selectedRunEvidenceError: string | null;
+  runLogDiff: RunLogDiff | null;
   latestRunSummary: RunSummary | null;
   runLogWarning: string | null;
   isLatestRunLogOpen: boolean;
@@ -183,6 +188,69 @@ const parseRunLogListResponse = (
   };
 };
 
+const isEvidenceArtifact = (
+  value: unknown
+): value is EvidenceIndex["artifacts"][number] => {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const artifact = value as Record<string, unknown>;
+  return (
+    typeof artifact.id === "string" &&
+    (artifact.kind === "inputs_summary" ||
+      artifact.kind === "gating" ||
+      artifact.kind === "debug") &&
+    typeof artifact.sha256 === "string" &&
+    typeof artifact.bytes === "number" &&
+    typeof artifact.created_at === "string"
+  );
+};
+
+const parseEvidenceIndexResponse = (
+  body: unknown
+): { ok: true; evidenceIndex: EvidenceIndex } | { ok: false; reason: string } => {
+  if (!body || typeof body !== "object") {
+    return { ok: false, reason: "invalid" };
+  }
+
+  const maybe = body as {
+    ok?: unknown;
+    reason?: unknown;
+    evidence_index?: unknown;
+  };
+
+  if (maybe.ok !== true) {
+    return {
+      ok: false,
+      reason: typeof maybe.reason === "string" ? maybe.reason : "invalid"
+    };
+  }
+
+  if (!maybe.evidence_index || typeof maybe.evidence_index !== "object") {
+    return { ok: false, reason: "invalid" };
+  }
+
+  const index = maybe.evidence_index as Record<string, unknown>;
+  if (
+    typeof index.run_id !== "string" ||
+    typeof index.created_at !== "string" ||
+    !Array.isArray(index.artifacts) ||
+    !index.artifacts.every(isEvidenceArtifact)
+  ) {
+    return { ok: false, reason: "invalid" };
+  }
+
+  return {
+    ok: true,
+    evidenceIndex: {
+      run_id: index.run_id,
+      created_at: index.created_at,
+      artifacts: index.artifacts
+    }
+  };
+};
+
 const parseRunLogDiffResponse = (body: unknown): RunLogDiff | null => {
   if (!body || typeof body !== "object") {
     return null;
@@ -210,6 +278,10 @@ export const useRadiographyView = ({
   seedUrls
 }: UseRadiographyViewArgs): RadiographyViewController => {
   const [runLogWarning, setRunLogWarning] = useState<string | null>(null);
+  const [selectedRunLog, setSelectedRunLog] = useState<RadiographyRunLog | null>(null);
+  const [selectedRunEvidence, setSelectedRunEvidence] = useState<EvidenceIndex | null>(null);
+  const [selectedRunEvidenceError, setSelectedRunEvidenceError] = useState<string | null>(null);
+  const [runLogDiff, setRunLogDiff] = useState<RunLogDiff | null>(null);
   const [isLatestRunLogOpen, setIsLatestRunLogOpen] = useState(false);
   const [runLogViewerTitle, setRunLogViewerTitle] = useState("Latest Run Log");
   const [latestRunLogText, setLatestRunLogText] = useState("");
@@ -381,6 +453,70 @@ export const useRadiographyView = ({
     void fetchRunLogList();
   }, [fetchRunLogList]);
 
+  const latestRunSummary = currentRunLog
+    ? {
+        run_id: currentRunLog.run_id,
+        created_at: currentRunLog.created_at,
+        duration_ms: currentRunLog.duration_ms
+      }
+    : null;
+
+  const readLatestRunLog = useCallback(async (): Promise<RadiographyRunLog | null> => {
+    const response = await fetch("/api/radiography/runlog/latest", {
+      cache: "no-store"
+    });
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch latest run log");
+    }
+
+    const body = (await response.json()) as unknown;
+    return parseLatestRunLogResponse(body);
+  }, []);
+
+  const readRunLogById = useCallback(async (
+    runId: string
+  ): Promise<{ runlog: RadiographyRunLog | null; reason: string | null }> => {
+    const response = await fetch(`/api/radiography/runlog/${encodeURIComponent(runId)}`, {
+      cache: "no-store"
+    });
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch run log");
+    }
+
+    const body = (await response.json()) as unknown;
+    return parseRunLogResponse(body);
+  }, []);
+
+  const fetchEvidenceByRunId = useCallback(async (runId: string) => {
+    setSelectedRunEvidence(null);
+    setSelectedRunEvidenceError(null);
+
+    try {
+      const response = await fetch(
+        `/api/radiography/runlog/evidence/${encodeURIComponent(runId)}`,
+        { cache: "no-store" }
+      );
+
+      const body = (await response.json()) as unknown;
+      const parsed = parseEvidenceIndexResponse(body);
+
+      if (!response.ok || !parsed.ok) {
+        if (!parsed.ok && parsed.reason === "not_found") {
+          setSelectedRunEvidenceError("No evidence pack found for this run.");
+          return;
+        }
+        throw new Error("Failed to load evidence pack");
+      }
+
+      setSelectedRunEvidence(parsed.evidenceIndex);
+      setSelectedRunEvidenceError(null);
+    } catch {
+      setSelectedRunEvidenceError("Unable to load evidence pack.");
+    }
+  }, []);
+
   useEffect(() => {
     if (!currentRunLog) {
       return;
@@ -406,9 +542,23 @@ export const useRadiographyView = ({
           return;
         }
 
+        const body = (await response.json()) as unknown;
+        const persistedRunId =
+          body && typeof body === "object" && typeof (body as { run_id?: unknown }).run_id === "string"
+            ? (body as { run_id: string }).run_id
+            : null;
+
         if (mounted) {
           setRunLogWarning(null);
-          void fetchRunLogList();
+          if (persistedRunId) {
+            const result = await readRunLogById(persistedRunId);
+            if (result.runlog) {
+              setSelectedRunLog(result.runlog);
+              setRunLogDiff(null);
+              await fetchEvidenceByRunId(result.runlog.run_id);
+            }
+          }
+          await fetchRunLogList();
         }
       } catch {
         if (mounted) {
@@ -420,51 +570,22 @@ export const useRadiographyView = ({
     return () => {
       mounted = false;
     };
-  }, [currentRunLog, fetchRunLogList, seedUrls]);
-
-  const latestRunSummary = currentRunLog
-    ? {
-        run_id: currentRunLog.run_id,
-        created_at: currentRunLog.created_at,
-        duration_ms: currentRunLog.duration_ms
-      }
-    : null;
-
-  const readLatestRunLog = async (): Promise<RadiographyRunLog | null> => {
-    const response = await fetch("/api/radiography/runlog/latest", {
-      cache: "no-store"
-    });
-
-    if (!response.ok) {
-      throw new Error("Failed to fetch latest run log");
-    }
-
-    const body = (await response.json()) as unknown;
-    return parseLatestRunLogResponse(body);
-  };
-
-  const readRunLogById = async (
-    runId: string
-  ): Promise<{ runlog: RadiographyRunLog | null; reason: string | null }> => {
-    const response = await fetch(`/api/radiography/runlog/${encodeURIComponent(runId)}`, {
-      cache: "no-store"
-    });
-
-    if (!response.ok) {
-      throw new Error("Failed to fetch run log");
-    }
-
-    const body = (await response.json()) as unknown;
-    return parseRunLogResponse(body);
-  };
+  }, [currentRunLog, fetchEvidenceByRunId, fetchRunLogList, readRunLogById, seedUrls]);
 
   const handleOpenLatestRunLog = async () => {
     try {
       const latest = await readLatestRunLog();
       setRunLogViewerTitle("Latest Run Log");
       if (!latest) {
+        setSelectedRunLog(null);
+        setSelectedRunEvidence(null);
+        setSelectedRunEvidenceError(null);
+        setRunLogDiff(null);
         setLatestRunLogText("No run logs yet.\n");
       } else {
+        setSelectedRunLog(latest);
+        setRunLogDiff(null);
+        await fetchEvidenceByRunId(latest.run_id);
         setLatestRunLogText(`${JSON.stringify(latest, null, 2)}\n`);
       }
       setIsLatestRunLogOpen(true);
@@ -582,6 +703,14 @@ export const useRadiographyView = ({
 
       const parsedRunlog = RadiographyRunLogV0Schema.safeParse(result.runlog);
       if (parsedRunlog.success) {
+        setSelectedRunLog(parsedRunlog.data);
+        setRunLogDiff(null);
+        if (mode === "persist") {
+          await fetchEvidenceByRunId(parsedRunlog.data.run_id);
+        } else {
+          setSelectedRunEvidence(null);
+          setSelectedRunEvidenceError("No evidence pack for dry-run replay.");
+        }
         setRunLogViewerTitle(`Replay ${parsedRunlog.data.run_id}`);
         setLatestRunLogText(`${JSON.stringify(parsedRunlog.data, null, 2)}\n`);
         setIsLatestRunLogOpen(true);
@@ -622,6 +751,7 @@ export const useRadiographyView = ({
         throw new Error("Invalid diff response");
       }
 
+      setRunLogDiff(diff);
       setRunLogViewerTitle(`RunLog Diff ${diff.from} -> ${diff.to}`);
       setLatestRunLogText(`${JSON.stringify(diff, null, 2)}\n`);
       setIsLatestRunLogOpen(true);
@@ -638,12 +768,21 @@ export const useRadiographyView = ({
       const result = await readRunLogById(runId);
       setRunLogViewerTitle(`Run Log ${runId}`);
       if (!result.runlog) {
+        setSelectedRunLog(null);
+        setSelectedRunEvidence(null);
+        setSelectedRunEvidenceError(
+          result.reason === "not_found" ? "No evidence pack found for this run." : "Unable to load evidence pack."
+        );
+        setRunLogDiff(null);
         if (result.reason === "not_found") {
           setLatestRunLogText("Run log not found.\n");
         } else {
           setLatestRunLogText("Run log is invalid.\n");
         }
       } else {
+        setSelectedRunLog(result.runlog);
+        setRunLogDiff(null);
+        await fetchEvidenceByRunId(result.runlog.run_id);
         setLatestRunLogText(`${JSON.stringify(result.runlog, null, 2)}\n`);
       }
       setIsLatestRunLogOpen(true);
@@ -685,6 +824,10 @@ export const useRadiographyView = ({
     canRunRadiography,
     radiographyView,
     currentRunLog,
+    selectedRunLog,
+    selectedRunEvidence,
+    selectedRunEvidenceError,
+    runLogDiff,
     latestRunSummary,
     runLogWarning: canRunRadiography ? runLogWarning : null,
     isLatestRunLogOpen,

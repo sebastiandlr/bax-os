@@ -102,6 +102,10 @@ export default function StudioPage() {
               hasSeedUrls={radiography.hasSeedUrls}
               canRunRadiography={radiography.canRunRadiography}
               radiographyView={radiography.radiographyView}
+              selectedRunLog={radiography.selectedRunLog}
+              selectedRunEvidence={radiography.selectedRunEvidence}
+              selectedRunEvidenceError={radiography.selectedRunEvidenceError}
+              runLogDiff={radiography.runLogDiff}
               latestRunSummary={radiography.latestRunSummary}
               runLogWarning={radiography.runLogWarning}
               isLatestRunLogOpen={radiography.isLatestRunLogOpen}

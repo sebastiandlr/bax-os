@@ -1,8 +1,8 @@
 import type { BuildSpecV0, BuildSpecV0CapabilityId } from "@bax/buildspec";
 import type {
+  DecisionTraceEntryV0,
   RadiographyOutputV0,
-  RadiographyRunLogV0,
-  ReasonCodeV0
+  RadiographyRunLogV0
 } from "@bax/radiography-contract";
 
 export type Source = "local" | "example";
@@ -27,6 +27,21 @@ export type RadiographyInputsState = {
 
 export type RadiographyView = RadiographyOutputV0;
 export type RadiographyRunLog = RadiographyRunLogV0;
+export type DecisionTraceEntry = DecisionTraceEntryV0;
+
+export type EvidenceArtifact = {
+  id: string;
+  kind: "inputs_summary" | "gating" | "debug";
+  sha256: string;
+  bytes: number;
+  created_at: string;
+};
+
+export type EvidenceIndex = {
+  run_id: string;
+  created_at: string;
+  artifacts: EvidenceArtifact[];
+};
 
 export type RunLogListItem = {
   run_id: string;
@@ -37,7 +52,7 @@ export type RunLogListItem = {
   reason_codes: string[];
   seed_urls_count: number;
   unique_hosts_count: number;
-  top_blockers?: ReasonCodeV0[];
+  top_blockers?: string[];
 };
 
 export type RunLogDiff = {

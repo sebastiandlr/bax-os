@@ -1,13 +1,12 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
-  RadiographyRunLogV0Schema,
-  type RadiographyRunLogV0
+  RadiographyRunLogV0Schema
 } from "@bax/radiography-contract";
 import { listRunLogs, writeRunLog } from "@/lib/radiography/runlogStorage";
 import {
-  buildRunLogDebug,
   createRunId,
+  deriveRunLogServerFields,
   extractSeedUrlsFromRunLogPayload,
   sanitizeRunLogForPersist
 } from "@/lib/radiography/runlogUtils";
@@ -121,10 +120,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const hardenedRunlog: RadiographyRunLogV0 = {
-    ...parsed.data,
-    debug: buildRunLogDebug(parsed.data)
-  };
+  const hardenedRunlog = deriveRunLogServerFields(parsed.data);
 
   await writeRunLog(hardenedRunlog);
   return NextResponse.json({ ok: true, run_id: hardenedRunlog.run_id });

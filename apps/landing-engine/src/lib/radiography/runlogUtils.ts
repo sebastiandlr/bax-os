@@ -1,22 +1,56 @@
 import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "fs/promises";
+import path from "path";
 import type { BuildSpecV0 } from "@bax/buildspec";
+import { z } from "zod";
 import {
   CORE_FIELDS_COUNT_V0,
   CORE_FIELDS_V0,
   RADIOGRAPHY_RUNLOG_V0_VERSION,
   RadiographyRunLogV0Schema,
+  type DecisionTraceEntryV0,
   type RadiographyOutputV0,
   type RadiographyRunLogV0,
   type ReasonCodeV0
 } from "@bax/radiography-contract";
+import { detectLandingEngineRoot } from "../spec/buildspecStorage";
 
 export const RUNLOG_RUN_ID_PATTERN = /^[a-zA-Z0-9_-]{6,80}$/;
 export const FORBIDDEN_RUNLOG_KEY_NAMES = new Set(["path", "seed_urls_raw"]);
-const FORBIDDEN_RUNLOG_STRING_PATTERNS = [/\/Users\//, /\.bax\/runlogs\//, /https?:\/\//i];
+const FORBIDDEN_RUNLOG_STRING_PATTERNS = [
+  /\/Users\//,
+  /\\Users\\/,
+  /\.bax\/runlogs\//,
+  /https?:\/\//i
+];
+
+const EVIDENCE_DIR = process.env.BAX_EVIDENCE_DIR
+  ? path.resolve(process.env.BAX_EVIDENCE_DIR)
+  : path.join(detectLandingEngineRoot(), ".bax", "evidence");
+const RESOLVED_EVIDENCE_DIR = path.resolve(EVIDENCE_DIR);
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 };
+
+const toPrettyJson = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
+
+const isPathInsideDir = (rootDir: string, targetPath: string) => {
+  const resolvedRoot = path.resolve(rootDir);
+  const resolvedTarget = path.resolve(targetPath);
+  return (
+    resolvedTarget === resolvedRoot ||
+    resolvedTarget.startsWith(`${resolvedRoot}${path.sep}`)
+  );
+};
+
+const ensureRunId = (run_id: string) => {
+  if (!RUNLOG_RUN_ID_PATTERN.test(run_id)) {
+    throw new Error("invalid run_id");
+  }
+};
+
+const toUnique = <T>(items: T[]) => [...new Set(items)];
 
 export const extractSeedUrlsFromRunLogPayload = (runlogObject: Record<string, unknown>) => {
   const seedUrls: string[] = [];
@@ -247,6 +281,8 @@ export const sanitizeRunLogForPersist = (
   };
 
   runlogRecord.inputs = inputs;
+  delete runlogRecord.debug;
+  delete runlogRecord.decision_trace;
   delete runlogRecord.errors;
   return runlogRecord;
 };
@@ -283,6 +319,192 @@ export const buildRunLogDebug = (
     publish_blockers_present: publishBlockersPresent,
     top_missing_core_fields: topMissingCoreFields,
     top_blockers: normalizedTopBlockers
+  };
+};
+
+const TRACE_MESSAGE_BY_CODE: Record<string, string> = {
+  needs_manual_verify: "Manual verification is required before publishing.",
+  unknown_field: "One or more required fields are still unknown.",
+  unverified_publish_blocker:
+    "Publish-blocker fields remain hidden until they are verified.",
+  missing_provenance: "Missing provenance detected for one or more values.",
+  language_not_supported: "Language is outside the supported deterministic allowlist.",
+  insufficient_core_coverage: "Core field coverage is below the publish threshold.",
+  conflict_detected: "Conflicting evidence was detected and needs manual resolution.",
+  lint_violation: "Lint policy violation detected in radiography output.",
+  missing_seed_url: "At least one seed URL is required to run radiography.",
+  gating_pass: "Gating status is pass.",
+  gating_soft_fail: "Gating status is soft_fail.",
+  gating_hard_fail: "Gating status is hard_fail."
+};
+
+const BLOCKER_REASON_CODES = new Set<ReasonCodeV0>([
+  "unverified_publish_blocker",
+  "conflict_detected",
+  "insufficient_core_coverage",
+  "lint_violation"
+]);
+
+const severityRank = {
+  blocker: 0,
+  warn: 1,
+  info: 2
+} as const;
+
+export type EvidenceArtifactV0 = {
+  id: string;
+  kind: "inputs_summary" | "gating" | "debug";
+  sha256: string;
+  bytes: number;
+  created_at: string;
+};
+
+export type EvidenceIndexV0 = {
+  run_id: string;
+  created_at: string;
+  artifacts: EvidenceArtifactV0[];
+};
+
+export const EvidenceArtifactV0Schema = z
+  .object({
+    id: z.string().min(1),
+    kind: z.enum(["inputs_summary", "gating", "debug"]),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    bytes: z.number().int().nonnegative(),
+    created_at: z.string().datetime()
+  })
+  .strict();
+
+export const EvidenceIndexV0Schema = z
+  .object({
+    run_id: z.string().regex(RUNLOG_RUN_ID_PATTERN),
+    created_at: z.string().datetime(),
+    artifacts: z.array(EvidenceArtifactV0Schema)
+  })
+  .strict();
+
+type EvidenceArtifactDraft = EvidenceArtifactV0 & {
+  content: string;
+};
+
+const buildEvidenceArtifacts = (runlog: RadiographyRunLogV0): EvidenceArtifactDraft[] => {
+  const artifacts: EvidenceArtifactDraft[] = [];
+
+  const definitions: Array<{
+    kind: EvidenceArtifactV0["kind"];
+    value: unknown;
+  }> = [
+    {
+      kind: "inputs_summary",
+      value: {
+        business_name: runlog.inputs.business_name,
+        city: runlog.inputs.city,
+        country: runlog.inputs.country,
+        language: runlog.inputs.language,
+        mode_hint: runlog.inputs.mode_hint,
+        seed_urls: runlog.inputs.seed_urls
+      }
+    },
+    {
+      kind: "gating",
+      value: runlog.outputs.gating_decision
+    }
+  ];
+
+  if (runlog.debug) {
+    definitions.push({ kind: "debug", value: runlog.debug });
+  }
+
+  for (const definition of definitions) {
+    const content = toPrettyJson(definition.value);
+    const sha = sha256Hex(content);
+    artifacts.push({
+      id: `${definition.kind}-${sha.slice(0, 8)}`,
+      kind: definition.kind,
+      sha256: sha,
+      bytes: Buffer.byteLength(content, "utf8"),
+      created_at: runlog.created_at,
+      content
+    });
+  }
+
+  return artifacts;
+};
+
+const buildEvidenceRefMap = (artifacts: EvidenceArtifactV0[]) => {
+  const refs: Partial<Record<EvidenceArtifactV0["kind"], string>> = {};
+  for (const artifact of artifacts) {
+    refs[artifact.kind] = `evidence:${artifact.id}`;
+  }
+  return refs;
+};
+
+const toReasonCodes = (runlog: RadiographyRunLogV0): ReasonCodeV0[] => {
+  return toUnique<ReasonCodeV0>([
+    ...runlog.outputs.gating_decision.reason_codes,
+    ...runlog.outputs.lint_report.top_reason_codes,
+    ...(runlog.debug?.top_blockers ?? [])
+  ]);
+};
+
+export const buildDecisionTraceEntries = (
+  runlog: RadiographyRunLogV0,
+  evidenceArtifacts: EvidenceArtifactV0[] = []
+): DecisionTraceEntryV0[] => {
+  const evidenceRefs = buildEvidenceRefMap(evidenceArtifacts);
+  const codes = toReasonCodes(runlog);
+  const trace: DecisionTraceEntryV0[] = [];
+
+  const gatingCode = `gating_${runlog.outputs.gating_decision.status}`;
+  trace.push({
+    code: gatingCode,
+    severity: "info",
+    message: TRACE_MESSAGE_BY_CODE[gatingCode] ?? `Gating status is ${runlog.outputs.gating_decision.status}.`,
+    evidence_refs: evidenceRefs.gating ? [evidenceRefs.gating] : undefined
+  });
+
+  for (const code of codes) {
+    const isBlocker =
+      (runlog.debug?.top_blockers ?? []).includes(code) ||
+      BLOCKER_REASON_CODES.has(code) ||
+      (runlog.outputs.gating_decision.status === "hard_fail" &&
+        runlog.outputs.gating_decision.reason_codes.includes(code));
+
+    const refs = toUnique(
+      [
+        evidenceRefs.gating,
+        evidenceRefs.debug,
+        code === "missing_seed_url" ? evidenceRefs.inputs_summary : undefined
+      ].filter((value): value is string => Boolean(value))
+    );
+
+    trace.push({
+      code,
+      severity: isBlocker ? "blocker" : "warn",
+      message: TRACE_MESSAGE_BY_CODE[code] ?? `Review required for decision code: ${code}.`,
+      evidence_refs: refs.length > 0 ? refs : undefined
+    });
+  }
+
+  return trace.sort((a, b) => {
+    const severityDelta = severityRank[a.severity] - severityRank[b.severity];
+    if (severityDelta !== 0) {
+      return severityDelta;
+    }
+    return a.code.localeCompare(b.code);
+  });
+};
+
+export const deriveRunLogServerFields = (runlog: RadiographyRunLogV0): RadiographyRunLogV0 => {
+  const baseRunlog: RadiographyRunLogV0 = {
+    ...runlog,
+    debug: buildRunLogDebug(runlog)
+  };
+
+  const artifacts = buildEvidenceArtifacts(baseRunlog);
+  return {
+    ...baseRunlog,
+    decision_trace: buildDecisionTraceEntries(baseRunlog, artifacts)
   };
 };
 
@@ -350,10 +572,7 @@ export const buildRunLogFromRunnerOutput = (params: {
     }
   };
 
-  return {
-    ...runlog,
-    debug: buildRunLogDebug(runlog)
-  };
+  return deriveRunLogServerFields(runlog);
 };
 
 const toUniqueSorted = (values: string[]) => {
@@ -460,4 +679,99 @@ export const computeRunLogDiff = (
       )
     }
   };
+};
+
+const getEvidenceDirForRun = (run_id: string) => {
+  ensureRunId(run_id);
+  const evidenceRunDir = path.join(EVIDENCE_DIR, run_id);
+  if (!isPathInsideDir(RESOLVED_EVIDENCE_DIR, evidenceRunDir)) {
+    throw new Error("invalid evidence path");
+  }
+  return evidenceRunDir;
+};
+
+const ensureEvidenceDir = async () => {
+  await mkdir(EVIDENCE_DIR, { recursive: true });
+};
+
+export const writeEvidencePackForRunLog = async (
+  runlog: RadiographyRunLogV0
+): Promise<EvidenceIndexV0> => {
+  ensureRunId(runlog.run_id);
+  await ensureEvidenceDir();
+
+  const evidenceRunDir = getEvidenceDirForRun(runlog.run_id);
+  await mkdir(evidenceRunDir, { recursive: true });
+
+  const drafts = buildEvidenceArtifacts(runlog);
+  const artifacts: EvidenceArtifactV0[] = drafts.map((draft) => ({
+    id: draft.id,
+    kind: draft.kind,
+    sha256: draft.sha256,
+    bytes: draft.bytes,
+    created_at: draft.created_at
+  }));
+
+  for (const draft of drafts) {
+    const artifactFilePath = path.join(evidenceRunDir, `${draft.id}.json`);
+    if (!isPathInsideDir(evidenceRunDir, artifactFilePath)) {
+      throw new Error("invalid artifact path");
+    }
+    await writeFile(artifactFilePath, draft.content, "utf8");
+  }
+
+  const index: EvidenceIndexV0 = {
+    run_id: runlog.run_id,
+    created_at: runlog.created_at,
+    artifacts
+  };
+
+  const indexPath = path.join(evidenceRunDir, "index.json");
+  if (!isPathInsideDir(evidenceRunDir, indexPath)) {
+    throw new Error("invalid evidence index path");
+  }
+  await writeFile(indexPath, toPrettyJson(index), "utf8");
+
+  return index;
+};
+
+export const readEvidenceIndexByRunId = async (
+  run_id: string
+): Promise<
+  | { ok: true; evidence_index: EvidenceIndexV0 }
+  | { ok: false; reason: "not_found" | "invalid" }
+> => {
+  if (!RUNLOG_RUN_ID_PATTERN.test(run_id)) {
+    return { ok: false, reason: "invalid" };
+  }
+
+  const evidenceRunDir = getEvidenceDirForRun(run_id);
+  const indexPath = path.join(evidenceRunDir, "index.json");
+
+  let indexText: string;
+  try {
+    indexText = await readFile(indexPath, "utf8");
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code === "ENOENT") {
+      return { ok: false, reason: "not_found" };
+    }
+    return { ok: false, reason: "invalid" };
+  }
+
+  try {
+    const parsed = JSON.parse(indexText) as unknown;
+    if (hasForbiddenRunLogContent(parsed)) {
+      return { ok: false, reason: "invalid" };
+    }
+
+    const validated = EvidenceIndexV0Schema.safeParse(parsed);
+    if (!validated.success) {
+      return { ok: false, reason: "invalid" };
+    }
+
+    return { ok: true, evidence_index: validated.data };
+  } catch {
+    return { ok: false, reason: "invalid" };
+  }
 };

@@ -291,6 +291,19 @@ const RadiographyRunLogDebugV0Schema = z
   .strict();
 export type RadiographyRunLogDebugV0 = z.infer<typeof RadiographyRunLogDebugV0Schema>;
 
+export const DecisionTraceSeverityV0Enum = z.enum(["info", "warn", "blocker"]);
+export type DecisionTraceSeverityV0 = z.infer<typeof DecisionTraceSeverityV0Enum>;
+
+export const DecisionTraceEntryV0Schema = z
+  .object({
+    code: z.string().min(1),
+    severity: DecisionTraceSeverityV0Enum,
+    message: z.string().min(1),
+    evidence_refs: z.array(z.string().min(1)).optional()
+  })
+  .strict();
+export type DecisionTraceEntryV0 = z.infer<typeof DecisionTraceEntryV0Schema>;
+
 export const RadiographyRunLogV0Schema = z
   .object({
     runlog_version: z.literal(RADIOGRAPHY_RUNLOG_V0_VERSION),
@@ -301,6 +314,7 @@ export const RadiographyRunLogV0Schema = z
     buildspec: RadiographyRunLogBuildSpecV0Schema,
     outputs: RadiographyRunLogOutputsV0Schema,
     debug: RadiographyRunLogDebugV0Schema.optional(),
+    decision_trace: z.array(DecisionTraceEntryV0Schema).optional(),
     errors: z
       .array(
         z

@@ -80,12 +80,16 @@ const createRunLogFixture = (input: RunLogFixtureInput) => {
 
 let testRoot = "";
 let runlogDir = "";
+let evidenceDir = "";
 
 test.before(async () => {
   testRoot = await mkdtemp(path.join(tmpdir(), "bax-runlog-golden-"));
   runlogDir = path.join(testRoot, "runlogs");
+  evidenceDir = path.join(testRoot, "evidence");
   await mkdir(runlogDir, { recursive: true });
+  await mkdir(evidenceDir, { recursive: true });
   process.env.BAX_RUNLOG_DIR = runlogDir;
+  process.env.BAX_EVIDENCE_DIR = evidenceDir;
 });
 
 test.after(async () => {
@@ -99,8 +103,16 @@ const resetRunlogDir = async () => {
   await Promise.all(files.map((fileName) => rm(path.join(runlogDir, fileName), { force: true })));
 };
 
+const resetEvidenceDir = async () => {
+  const runDirs = await readdir(evidenceDir);
+  await Promise.all(
+    runDirs.map((entryName) => rm(path.join(evidenceDir, entryName), { recursive: true, force: true }))
+  );
+};
+
 test("runlogStorage.listRunLogs ignores invalid JSON and keeps deterministic order", async () => {
   await resetRunlogDir();
+  await resetEvidenceDir();
 
   const { listRunLogs } = await importFresh<{
     listRunLogs: (limit: number) => Promise<
@@ -156,6 +168,7 @@ test("runlogStorage.listRunLogs ignores invalid JSON and keeps deterministic ord
 
 test("runlog POST redacts forbidden keys before persistence", async () => {
   await resetRunlogDir();
+  await resetEvidenceDir();
 
   const route = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
     "src/app/api/radiography/runlog/route.ts"
@@ -195,6 +208,7 @@ test("runlog POST redacts forbidden keys before persistence", async () => {
 
 test("pruneRunLogs respects bounds and never touches files outside runlog directory", async () => {
   await resetRunlogDir();
+  await resetEvidenceDir();
 
   const outsideFile = path.join(testRoot, "outside.json");
   await writeFile(outsideFile, "{\"safe\":true}\n", "utf8");
@@ -270,4 +284,184 @@ test("computeRunLogDiff returns blocker and delta changes deterministically", as
   assert.deepEqual(diff.changes.capabilities_changed.removed, ["analytics_core"]);
   assert.deepEqual(diff.changes.seed_hosts_changed.added, ["maps.example.com"]);
   assert.deepEqual(diff.changes.seed_hosts_changed.removed, []);
+});
+
+test("runlog persist writes evidence pack artifacts without raw URL leaks", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const route = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/route.ts"
+  );
+
+  const request = new Request("http://localhost/api/radiography/runlog", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      runlog: createRunLogFixture({ run_id: "run-evid01" }),
+      seed_urls_raw: ["https://example.com/a", "https://maps.example.com/b?x=1"]
+    })
+  });
+
+  const response = await route.POST(request);
+  const body = (await response.json()) as { ok?: boolean; run_id?: string };
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(typeof body.run_id, "string");
+
+  const runId = body.run_id as string;
+  const indexPath = path.join(evidenceDir, runId, "index.json");
+  const indexText = await readFile(indexPath, "utf8");
+  const index = JSON.parse(indexText) as {
+    run_id: string;
+    artifacts: Array<{ id: string; kind: string; sha256: string; bytes: number }>;
+  };
+
+  assert.equal(index.run_id, runId);
+  assert.ok(index.artifacts.length >= 2);
+  assert.ok(index.artifacts.some((artifact) => artifact.kind === "inputs_summary"));
+  assert.ok(index.artifacts.some((artifact) => artifact.kind === "gating"));
+  for (const artifact of index.artifacts) {
+    assert.match(artifact.sha256, /^[a-f0-9]{64}$/);
+    const artifactPath = path.join(evidenceDir, runId, `${artifact.id}.json`);
+    const artifactText = await readFile(artifactPath, "utf8");
+    assert.equal(artifactText.includes("http://"), false);
+    assert.equal(artifactText.includes("https://"), false);
+    assert.equal(artifactText.includes("/Users/"), false);
+    assert.equal(artifactText.includes(".bax/runlogs"), false);
+  }
+});
+
+test("decision_trace is deterministic and references existing evidence artifacts", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const route = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/route.ts"
+  );
+  const { deriveRunLogServerFields } = await importFresh<{
+    deriveRunLogServerFields: (runlog: ReturnType<typeof createRunLogFixture>) => ReturnType<typeof createRunLogFixture>;
+  }>("src/lib/radiography/runlogUtils.ts");
+
+  const request = new Request("http://localhost/api/radiography/runlog", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      runlog: createRunLogFixture({
+        run_id: "run-trace1",
+        reason_codes: ["unverified_publish_blocker", "insufficient_core_coverage"],
+        blockers: ["unverified_publish_blocker", "insufficient_core_coverage"],
+        hard_count: 1,
+        warn_count: 1,
+        items_count: 2
+      }),
+      seed_urls_raw: ["https://example.com/landing"]
+    })
+  });
+
+  const postResponse = await route.POST(request);
+  const postBody = (await postResponse.json()) as { ok?: boolean; run_id?: string };
+  assert.equal(postResponse.status, 200);
+  assert.equal(postBody.ok, true);
+  assert.equal(typeof postBody.run_id, "string");
+
+  const runId = postBody.run_id as string;
+  const runlogText = await readFile(path.join(runlogDir, `${runId}.json`), "utf8");
+  const persistedRunlog = JSON.parse(runlogText) as ReturnType<typeof createRunLogFixture> & {
+    decision_trace?: Array<{
+      code: string;
+      severity: "info" | "warn" | "blocker";
+      message: string;
+      evidence_refs?: string[];
+    }>;
+    debug?: { top_blockers?: string[] };
+  };
+
+  assert.ok(Array.isArray(persistedRunlog.decision_trace));
+  assert.ok((persistedRunlog.decision_trace?.length ?? 0) > 0);
+
+  const regenerated = deriveRunLogServerFields(persistedRunlog);
+  assert.deepEqual(regenerated.decision_trace, persistedRunlog.decision_trace);
+
+  const rank = { blocker: 0, warn: 1, info: 2 } as const;
+  const trace = persistedRunlog.decision_trace ?? [];
+  for (let index = 1; index < trace.length; index += 1) {
+    const prev = trace[index - 1];
+    const curr = trace[index];
+    const prevRank = rank[prev.severity];
+    const currRank = rank[curr.severity];
+    assert.ok(prevRank <= currRank);
+    if (prevRank === currRank) {
+      assert.ok(prev.code.localeCompare(curr.code) <= 0);
+    }
+  }
+
+  for (const blockerCode of persistedRunlog.debug?.top_blockers ?? []) {
+    assert.ok(
+      trace.some((entry) => entry.code === blockerCode && entry.severity === "blocker"),
+      `missing blocker decision trace for ${blockerCode}`
+    );
+  }
+
+  const evidenceIndex = JSON.parse(
+    await readFile(path.join(evidenceDir, runId, "index.json"), "utf8")
+  ) as {
+    artifacts: Array<{ id: string }>;
+  };
+  const evidenceIds = new Set(evidenceIndex.artifacts.map((artifact) => `evidence:${artifact.id}`));
+
+  for (const entry of trace) {
+    for (const evidenceRef of entry.evidence_refs ?? []) {
+      assert.ok(evidenceIds.has(evidenceRef), `missing evidence ref ${evidenceRef}`);
+    }
+  }
+});
+
+test("evidence endpoint returns index without path or URL leaks", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const route = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/route.ts"
+  );
+  const evidenceRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/evidence/[run_id]/route.ts");
+
+  const postRequest = new Request("http://localhost/api/radiography/runlog", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      runlog: createRunLogFixture({ run_id: "run-evid02" }),
+      seed_urls_raw: ["https://example.com/path?a=1"]
+    })
+  });
+  const postResponse = await route.POST(postRequest);
+  const postBody = (await postResponse.json()) as { ok?: boolean; run_id?: string };
+  assert.equal(postResponse.status, 200);
+  assert.equal(postBody.ok, true);
+  assert.equal(typeof postBody.run_id, "string");
+
+  const runId = postBody.run_id as string;
+  const getResponse = await evidenceRoute.GET(
+    new Request(`http://localhost/api/radiography/runlog/evidence/${runId}`),
+    { params: Promise.resolve({ run_id: runId }) }
+  );
+  assert.equal(getResponse.status, 200);
+
+  const body = (await getResponse.json()) as {
+    ok?: boolean;
+    evidence_index?: unknown;
+  };
+  assert.equal(body.ok, true);
+
+  const bodyText = JSON.stringify(body);
+  assert.equal(bodyText.includes("/Users/"), false);
+  assert.equal(bodyText.includes("\\\\Users\\\\"), false);
+  assert.equal(bodyText.includes(".bax/runlogs"), false);
+  assert.equal(bodyText.includes("http://"), false);
+  assert.equal(bodyText.includes("https://"), false);
 });

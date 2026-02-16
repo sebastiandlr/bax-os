@@ -4,7 +4,11 @@ import {
   type RadiographyRunLogV0
 } from "@bax/radiography-contract";
 import { detectLandingEngineRoot } from "../spec/buildspecStorage";
-import { parseStoredRunLog, RUNLOG_RUN_ID_PATTERN } from "./runlogUtils";
+import {
+  parseStoredRunLog,
+  RUNLOG_RUN_ID_PATTERN,
+  writeEvidencePackForRunLog
+} from "./runlogUtils";
 
 const ENV_RUNLOG_DIR = process.env.BAX_RUNLOG_DIR;
 const RUNLOG_DIR = ENV_RUNLOG_DIR
@@ -101,6 +105,7 @@ export const writeRunLog = async (runlog: RadiographyRunLogV0) => {
   const filePath = path.join(RUNLOG_DIR, `${runlog.run_id}.json`);
   const jsonText = `${JSON.stringify(runlog, null, 2)}\n`;
   await writeFile(filePath, jsonText, "utf8");
+  await writeEvidencePackForRunLog(runlog);
   return filePath;
 };
 
