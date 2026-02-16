@@ -467,6 +467,7 @@ const parseReplayResultResponse = (body: unknown): EvidenceReplayResult | null =
 
   if (
     typeof replay.run_id !== "string" ||
+    typeof compare.baseline_run_id !== "string" ||
     !replayGating ||
     !baselineGating ||
     typeof compare.match !== "boolean" ||
@@ -495,6 +496,7 @@ const parseReplayResultResponse = (body: unknown): EvidenceReplayResult | null =
       decision_trace: parseReplayDecisionTrace(replay.decision_trace)
     },
     compare: {
+      baseline_run_id: compare.baseline_run_id,
       baseline: baselineGating,
       match: compare.match,
       diff: {

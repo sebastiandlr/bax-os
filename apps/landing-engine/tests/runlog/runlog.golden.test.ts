@@ -1339,6 +1339,7 @@ test("evidence replay returns deterministic output with match=true for untampere
       };
     };
     compare?: {
+      baseline_run_id: string;
       match: boolean;
       baseline: {
         status: string;
@@ -1352,6 +1353,7 @@ test("evidence replay returns deterministic output with match=true for untampere
   };
   assert.equal(bodyA.ok, true);
   assert.equal(typeof bodyA.replay?.run_id, "string");
+  assert.equal(bodyA.compare?.baseline_run_id, runId);
   assert.equal(bodyA.compare?.match, true);
   assert.equal(bodyA.compare?.diff.integrity_warnings.length, 0);
   assert.equal(bodyA.replay?.gating_decision.status, bodyA.compare?.baseline.status);
@@ -1637,6 +1639,9 @@ test("evidence replay persist_stub writes portable_replay stub and returns 409 o
   assert.equal(persistResponse.status, 200);
   const persistBody = (await persistResponse.json()) as {
     ok?: boolean;
+    compare?: {
+      baseline_run_id?: string;
+    };
     persisted?: {
       run_id: string;
       source: string;
@@ -1644,6 +1649,7 @@ test("evidence replay persist_stub writes portable_replay stub and returns 409 o
     };
   };
   assert.equal(persistBody.ok, true);
+  assert.equal(persistBody.compare?.baseline_run_id, replayRunId);
   assert.equal(persistBody.persisted?.run_id, replayRunId);
   assert.equal(persistBody.persisted?.source, "portable_replay");
   assert.equal(persistBody.persisted?.is_stub, true);

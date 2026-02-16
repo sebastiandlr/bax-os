@@ -1021,7 +1021,10 @@ export function RadiographyPanel({
                   </span>
                 </div>
                 <div className="mt-1 text-zinc-400">
-                  baseline_run_id: <span className="text-zinc-200">n/a</span>
+                  baseline_run_id:{" "}
+                  <span className="font-mono text-zinc-200">
+                    {replayResult.compare.baseline_run_id}
+                  </span>
                 </div>
                 <div className="mt-1 text-zinc-400">
                   baseline → replay:{" "}

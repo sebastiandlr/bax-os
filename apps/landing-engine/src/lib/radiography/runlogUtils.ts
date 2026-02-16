@@ -1216,6 +1216,7 @@ const PORTABLE_REPLAY_DEFAULT_GATING_DECISION = {
 type PortableReplayGatingDecision = RadiographyRunLogV0["outputs"]["gating_decision"];
 
 export type PortableReplayCompare = {
+  baseline_run_id: string;
   baseline: PortableReplayGatingDecision;
   match: boolean;
   diff: {
@@ -1600,6 +1601,7 @@ export const computePortableReplayFromEvidenceBundle = (params: {
         decision_trace
       },
       compare: {
+        baseline_run_id: bundle.run_id,
         baseline,
         match,
         diff: {

@@ -60,5 +60,5 @@ Costs:
 
 ## Follow-ups
 
-- Add `baseline_run_id` in replay response for stronger compare provenance.
+- Replay response includes `compare.baseline_run_id`, set deterministically to the replay bundle `run_id` for provenance clarity.
 - Consider ADR-002 for bundle schema versioning and forward compatibility policy.
