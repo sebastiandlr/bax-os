@@ -1207,6 +1207,414 @@ const buildImportedRunLogStub = (
   };
 };
 
+const PORTABLE_REPLAY_DEFAULT_GATING_DECISION = {
+  status: "soft_fail" as const,
+  core_percent: 50,
+  reason_codes: ["needs_manual_verify"] as ReasonCodeV0[]
+};
+
+type PortableReplayGatingDecision = RadiographyRunLogV0["outputs"]["gating_decision"];
+
+export type PortableReplayCompare = {
+  baseline: PortableReplayGatingDecision;
+  match: boolean;
+  diff: {
+    status_changed: boolean;
+    core_percent_delta: number;
+    reason_codes: {
+      added: string[];
+      removed: string[];
+    };
+    integrity_warnings: string[];
+  };
+};
+
+export type PortableReplayComputation = {
+  run_id: string;
+  replay: {
+    run_id: string;
+    gating_decision: PortableReplayGatingDecision;
+    decision_trace: DecisionTraceEntryV0[];
+  };
+  compare: PortableReplayCompare;
+  runlog_stub: RadiographyRunLogV0;
+};
+
+type PortableReplayFailure = {
+  ok: false;
+  error: "invalid" | "integrity_mismatch" | "bundle_too_large";
+  details?: {
+    code: EvidenceBundleError;
+    artifact_id?: string;
+    warnings?: string[];
+  };
+};
+
+const normalizeReasonCodes = (value: unknown, fallback: ReasonCodeV0[]): ReasonCodeV0[] => {
+  if (!Array.isArray(value)) {
+    return [...fallback];
+  }
+
+  const normalized = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item): item is ReasonCodeV0 => REASON_CODE_SET.has(item as ReasonCodeV0));
+
+  return toUnique(normalized);
+};
+
+const normalizeGatingDecision = (
+  value: unknown,
+  fallback: PortableReplayGatingDecision
+): PortableReplayGatingDecision => {
+  if (!isRecord(value)) {
+    return {
+      status: fallback.status,
+      core_percent: fallback.core_percent,
+      reason_codes: [...fallback.reason_codes]
+    };
+  }
+
+  const status =
+    typeof value.status === "string" &&
+    RUNLOG_GATING_STATUSES.has(value.status as "pass" | "soft_fail" | "hard_fail")
+      ? (value.status as "pass" | "soft_fail" | "hard_fail")
+      : fallback.status;
+
+  const core_percent =
+    typeof value.core_percent === "number" && Number.isFinite(value.core_percent)
+      ? Math.max(0, Math.min(100, value.core_percent))
+      : fallback.core_percent;
+
+  return {
+    status,
+    core_percent,
+    reason_codes: normalizeReasonCodes(value.reason_codes, fallback.reason_codes)
+  };
+};
+
+const extractArtifactContentByKind = (
+  bundle: EvidenceBundleV0,
+  kind: EvidenceArtifactV0["kind"]
+) => {
+  const artifact = bundle.artifacts.find((entry) => entry.kind === kind);
+  if (!artifact) {
+    return null;
+  }
+  return sanitizeArtifactJsonContent(artifact.content);
+};
+
+const extractBaselineGatingDecision = (bundle: EvidenceBundleV0): PortableReplayGatingDecision => {
+  const fallback = PORTABLE_REPLAY_DEFAULT_GATING_DECISION;
+  const gatingContent = extractArtifactContentByKind(bundle, "gating");
+  if (!gatingContent) {
+    return {
+      status: fallback.status,
+      core_percent: fallback.core_percent,
+      reason_codes: [...fallback.reason_codes]
+    };
+  }
+
+  const candidate =
+    isRecord(gatingContent.gating_decision) ? gatingContent.gating_decision : gatingContent;
+  return normalizeGatingDecision(candidate, fallback);
+};
+
+const buildPortableReplayRunId = (bundle: EvidenceBundleV0, requestedRunId?: string) => {
+  if (requestedRunId) {
+    if (!RUNLOG_RUN_ID_PATTERN.test(requestedRunId)) {
+      return null;
+    }
+    return requestedRunId;
+  }
+
+  const bundleFingerprint = sha256Hex(toPrettyJson(bundle)).slice(0, 12);
+  const normalizedRunId = bundle.run_id
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "")
+    .slice(0, 48);
+  const computed = `replay-${normalizedRunId || "bundle"}-${bundleFingerprint}`.slice(0, 80);
+  return RUNLOG_RUN_ID_PATTERN.test(computed) ? computed : `replay-${bundleFingerprint}`;
+};
+
+const buildPortableReplayDecisionTrace = (
+  gatingDecision: PortableReplayGatingDecision,
+  integrityWarnings: string[]
+): DecisionTraceEntryV0[] => {
+  const entries: DecisionTraceEntryV0[] = [];
+  const seenCodes = new Set<string>();
+  const maybePush = (entry: DecisionTraceEntryV0) => {
+    if (seenCodes.has(entry.code)) {
+      return;
+    }
+    entries.push(entry);
+    seenCodes.add(entry.code);
+  };
+
+  const gatingCode = `gating_${gatingDecision.status}`;
+  maybePush({
+    code: gatingCode,
+    severity: "info",
+    message:
+      TRACE_MESSAGE_BY_CODE[gatingCode] ??
+      `Gating status is ${gatingDecision.status}.`
+  });
+
+  for (const reasonCode of [...gatingDecision.reason_codes].sort()) {
+    maybePush({
+      code: reasonCode,
+      severity: BLOCKER_REASON_CODES.has(reasonCode) ? "blocker" : "warn",
+      message:
+        TRACE_MESSAGE_BY_CODE[reasonCode] ??
+        `Review required for decision code: ${reasonCode}.`
+    });
+  }
+
+  if (integrityWarnings.length > 0) {
+    maybePush({
+      code: "integrity_mismatch",
+      severity: "blocker",
+      message:
+        "Evidence integrity mismatch detected during portable replay.",
+      evidence_refs: [...integrityWarnings].sort()
+    });
+  }
+
+  return entries.sort((a, b) => {
+    const severityDelta = severityRank[a.severity] - severityRank[b.severity];
+    if (severityDelta !== 0) {
+      return severityDelta;
+    }
+    return a.code.localeCompare(b.code);
+  });
+};
+
+const extractPortableReplayInputs = (
+  bundle: EvidenceBundleV0
+): RadiographyRunLogV0["inputs"] => {
+  const fallback: RadiographyRunLogV0["inputs"] = {
+    contractVersion: "0.1.0",
+    business_name: "IMPORTED_BUNDLE",
+    city: "UNKNOWN",
+    country: "UNKNOWN",
+    language: "es",
+    mode_hint: "lead",
+    seed_urls: {
+      count: 0,
+      unique_hosts: [],
+      url_hashes: []
+    }
+  };
+
+  const inputsContent = extractArtifactContentByKind(bundle, "inputs_summary");
+  if (!inputsContent) {
+    return fallback;
+  }
+
+  const mode_hint =
+    inputsContent.mode_hint === "lead" ||
+    inputsContent.mode_hint === "booking" ||
+    inputsContent.mode_hint === "quote"
+      ? inputsContent.mode_hint
+      : fallback.mode_hint;
+
+  const seedUrlsRaw = isRecord(inputsContent.seed_urls) ? inputsContent.seed_urls : {};
+  const seedUrlCount =
+    typeof seedUrlsRaw.count === "number" && Number.isFinite(seedUrlsRaw.count)
+      ? Math.max(0, Math.floor(seedUrlsRaw.count))
+      : fallback.seed_urls.count;
+
+  return {
+    contractVersion: "0.1.0" as const,
+    business_name:
+      typeof inputsContent.business_name === "string" &&
+      inputsContent.business_name.trim().length > 0
+        ? inputsContent.business_name
+        : fallback.business_name,
+    city:
+      typeof inputsContent.city === "string" && inputsContent.city.trim().length > 0
+        ? inputsContent.city
+        : fallback.city,
+    country:
+      typeof inputsContent.country === "string" && inputsContent.country.trim().length > 0
+        ? inputsContent.country
+        : fallback.country,
+    language:
+      typeof inputsContent.language === "string" && inputsContent.language.trim().length > 0
+        ? inputsContent.language
+        : fallback.language,
+    mode_hint,
+    seed_urls: {
+      count: seedUrlCount,
+      unique_hosts: normalizeHostTokens(seedUrlsRaw.unique_hosts),
+      url_hashes: normalizeExistingUrlHashes(seedUrlsRaw.url_hashes)
+    }
+  };
+};
+
+const buildPortableReplayRunLogStub = (params: {
+  bundle: EvidenceBundleV0;
+  run_id: string;
+  gating_decision: PortableReplayGatingDecision;
+  decision_trace: DecisionTraceEntryV0[];
+}): RadiographyRunLogV0 => {
+  const inputs = extractPortableReplayInputs(params.bundle);
+  const topReasonCodes = params.gating_decision.reason_codes.slice(0, 10);
+  const hardCount = params.gating_decision.status === "hard_fail" ? 1 : 0;
+  const warnCount = params.gating_decision.status === "soft_fail" ? 1 : 0;
+
+  return {
+    runlog_version: RADIOGRAPHY_RUNLOG_V0_VERSION,
+    run_id: params.run_id,
+    created_at: params.bundle.created_at,
+    duration_ms: 0,
+    inputs,
+    buildspec: {
+      schemaVersion: "0.1.0",
+      eventSchemaVersion: "0.1.0",
+      mode: inputs.mode_hint,
+      capabilities: []
+    },
+    outputs: {
+      gating_decision: params.gating_decision,
+      lint_report: {
+        items_count: hardCount + warnCount,
+        hard_count: hardCount,
+        warn_count: warnCount,
+        top_reason_codes: topReasonCodes
+      },
+      patch_stats: {
+        ops_count: 0
+      },
+      provenance_coverage_percent: params.gating_decision.core_percent
+    },
+    decision_trace: params.decision_trace,
+    source: "portable_replay",
+    is_stub: true,
+    imported_from: {
+      bundle_version: params.bundle.bundle_version
+    }
+  };
+};
+
+const toPortableReplayWarning = (failure: EvidenceBundleFailure) => {
+  if (failure.artifact_id) {
+    return `${failure.error}:${failure.artifact_id}`;
+  }
+  return failure.error;
+};
+
+export const computePortableReplayFromEvidenceBundle = (params: {
+  bundleInput: unknown;
+  strict?: boolean;
+  requested_run_id?: string;
+}):
+  | {
+      ok: true;
+      result: PortableReplayComputation;
+    }
+  | PortableReplayFailure => {
+  const strict = params.strict ?? true;
+  const parsedBundle = EvidenceBundleV0Schema.safeParse(params.bundleInput);
+  if (!parsedBundle.success) {
+    return { ok: false, error: "invalid" };
+  }
+
+  const bundle = parsedBundle.data;
+  const baseline = extractBaselineGatingDecision(bundle);
+  const run_id = buildPortableReplayRunId(bundle, params.requested_run_id);
+  if (!run_id) {
+    return {
+      ok: false,
+      error: "invalid"
+    };
+  }
+
+  const draftResult = buildBundleDraftArtifacts(bundle);
+  const integrityWarnings: string[] = [];
+
+  if (!draftResult.ok) {
+    if (draftResult.error === "bundle_too_large") {
+      return { ok: false, error: "bundle_too_large" };
+    }
+
+    if (strict) {
+      return {
+        ok: false,
+        error: "integrity_mismatch",
+        details: {
+          code: draftResult.error,
+          artifact_id: draftResult.artifact_id
+        }
+      };
+    }
+
+    integrityWarnings.push(toPortableReplayWarning(draftResult));
+  }
+
+  const replayGatingDecision =
+    integrityWarnings.length > 0
+      ? {
+          status: PORTABLE_REPLAY_DEFAULT_GATING_DECISION.status,
+          core_percent: PORTABLE_REPLAY_DEFAULT_GATING_DECISION.core_percent,
+          reason_codes: [...PORTABLE_REPLAY_DEFAULT_GATING_DECISION.reason_codes]
+        }
+      : baseline;
+
+  const reasonCodeDiff = diffStringLists(
+    baseline.reason_codes,
+    replayGatingDecision.reason_codes
+  );
+
+  const match =
+    integrityWarnings.length === 0 &&
+    baseline.status === replayGatingDecision.status &&
+    baseline.core_percent === replayGatingDecision.core_percent &&
+    reasonCodeDiff.added.length === 0 &&
+    reasonCodeDiff.removed.length === 0;
+
+  const decision_trace = buildPortableReplayDecisionTrace(
+    replayGatingDecision,
+    integrityWarnings
+  );
+
+  const runlog_stub = buildPortableReplayRunLogStub({
+    bundle,
+    run_id,
+    gating_decision: replayGatingDecision,
+    decision_trace
+  });
+
+  const parsedStub = RadiographyRunLogV0Schema.safeParse(runlog_stub);
+  if (!parsedStub.success) {
+    return { ok: false, error: "invalid" };
+  }
+
+  return {
+    ok: true,
+    result: {
+      run_id,
+      replay: {
+        run_id,
+        gating_decision: replayGatingDecision,
+        decision_trace
+      },
+      compare: {
+        baseline,
+        match,
+        diff: {
+          status_changed: baseline.status !== replayGatingDecision.status,
+          core_percent_delta:
+            replayGatingDecision.core_percent - baseline.core_percent,
+          reason_codes: reasonCodeDiff,
+          integrity_warnings: [...integrityWarnings].sort()
+        }
+      },
+      runlog_stub: parsedStub.data
+    }
+  };
+};
+
 export const readEvidenceBundleByRunId = async (
   run_id: string
 ): Promise<EvidenceBundleSuccess | EvidenceBundleFailure> => {

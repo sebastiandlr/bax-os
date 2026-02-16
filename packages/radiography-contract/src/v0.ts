@@ -304,7 +304,11 @@ export const DecisionTraceEntryV0Schema = z
   .strict();
 export type DecisionTraceEntryV0 = z.infer<typeof DecisionTraceEntryV0Schema>;
 
-export const RadiographyRunLogSourceV0Enum = z.enum(["local_run", "imported_bundle"]);
+export const RadiographyRunLogSourceV0Enum = z.enum([
+  "local_run",
+  "imported_bundle",
+  "portable_replay"
+]);
 export type RadiographyRunLogSourceV0 = z.infer<typeof RadiographyRunLogSourceV0Enum>;
 
 export const RadiographyRunLogImportedFromV0Schema = z
