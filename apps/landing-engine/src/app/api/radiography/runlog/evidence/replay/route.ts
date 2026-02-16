@@ -100,6 +100,11 @@ const getRequestId = (request: Request) => {
   return buildFallbackRequestId();
 };
 
+const withRequestId = (response: NextResponse, requestId: string) => {
+  response.headers.set("x-request-id", requestId);
+  return response;
+};
+
 const buildInternalErrorResponse = (params: {
   request_id: string;
   code: "contract_violation" | "internal_error";
@@ -129,14 +134,17 @@ const buildInternalErrorResponse = (params: {
 
   console.error("radiography_replay_error", logPayload);
 
-  return NextResponse.json(
-    {
-      ok: false,
-      error: "internal_error",
-      request_id: params.request_id,
-      details
-    },
-    { status: 500 }
+  return withRequestId(
+    NextResponse.json(
+      {
+        ok: false,
+        error: "internal_error",
+        request_id: params.request_id,
+        details
+      },
+      { status: 500 }
+    ),
+    params.request_id
   );
 };
 
@@ -144,107 +152,122 @@ export async function POST(request: Request) {
   const request_id = getRequestId(request);
 
   try {
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json(
-      { ok: false, error: "invalid", errors: ["body: request body must be valid JSON"] },
-      { status: 400 }
-    );
-  }
-
-  const parsedBody = ReplayBodySchema.safeParse(body);
-  if (!parsedBody.success) {
-    return NextResponse.json(
-      { ok: false, error: "invalid", errors: formatIssues(parsedBody.error.issues) },
-      { status: 400 }
-    );
-  }
-
-  const strict = parsedBody.data.options?.strict ?? true;
-  const persist_stub = parsedBody.data.options?.persist_stub ?? false;
-  const requested_run_id = persist_stub ? parsedBody.data.options?.run_id : undefined;
-
-  const replayResult = computePortableReplayFromEvidenceBundle({
-    bundleInput: parsedBody.data.bundle,
-    strict,
-    requested_run_id
-  });
-
-  if (!replayResult.ok) {
-    const status =
-      replayResult.error === "bundle_too_large"
-        ? 413
-        : replayResult.error === "integrity_mismatch"
-          ? 409
-          : 400;
-
-    return NextResponse.json(
-      {
-        ok: false,
-        error: replayResult.error,
-        details: replayResult.details
-      },
-      { status }
-    );
-  }
-
-  let persisted:
-    | {
-        run_id: string;
-        is_stub: true;
-        source: "portable_replay";
-      }
-    | undefined;
-
-  if (persist_stub) {
-    const existingRun = await readRunLogById(replayResult.result.run_id);
-    if (existingRun.ok) {
-      return NextResponse.json(
-        { ok: false, error: "run_already_exists" },
-        { status: 409 }
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return withRequestId(
+        NextResponse.json(
+          { ok: false, error: "invalid", errors: ["body: request body must be valid JSON"] },
+          { status: 400 }
+        ),
+        request_id
       );
     }
-    if (existingRun.reason !== "not_found") {
-      return NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
+
+    const parsedBody = ReplayBodySchema.safeParse(body);
+    if (!parsedBody.success) {
+      return withRequestId(
+        NextResponse.json(
+          { ok: false, error: "invalid", errors: formatIssues(parsedBody.error.issues) },
+          { status: 400 }
+        ),
+        request_id
+      );
     }
 
-    await writeRunLog(replayResult.result.runlog_stub);
-    persisted = {
-      run_id: replayResult.result.run_id,
-      is_stub: true,
-      source: "portable_replay"
-    };
-  }
+    const strict = parsedBody.data.options?.strict ?? true;
+    const persist_stub = parsedBody.data.options?.persist_stub ?? false;
+    const requested_run_id = persist_stub ? parsedBody.data.options?.run_id : undefined;
 
-  const successPayload = {
-    ok: true,
-    replay: {
-      run_id: replayResult.result.replay.run_id,
-      gating_decision: replayResult.result.replay.gating_decision,
-      decision_trace: replayResult.result.replay.decision_trace
-    },
-    compare: {
-      baseline_run_id: replayResult.result.compare.baseline_run_id,
-      baseline: replayResult.result.compare.baseline,
-      match: replayResult.result.compare.match,
-      diff: replayResult.result.compare.diff
-    },
-    ...(persisted ? { persisted } : {})
-  };
-
-  const parsedSuccessPayload = EvidenceReplayResponseV0Schema.safeParse(successPayload);
-  if (!parsedSuccessPayload.success) {
-    const details = buildContractViolationDetails(parsedSuccessPayload.error.issues);
-    return buildInternalErrorResponse({
-      request_id,
-      code: "contract_violation",
-      contractViolationDetails: details
+    const replayResult = computePortableReplayFromEvidenceBundle({
+      bundleInput: parsedBody.data.bundle,
+      strict,
+      requested_run_id
     });
-  }
 
-  return NextResponse.json(parsedSuccessPayload.data);
+    if (!replayResult.ok) {
+      const status =
+        replayResult.error === "bundle_too_large"
+          ? 413
+          : replayResult.error === "integrity_mismatch"
+            ? 409
+            : 400;
+
+      return withRequestId(
+        NextResponse.json(
+          {
+            ok: false,
+            error: replayResult.error,
+            details: replayResult.details
+          },
+          { status }
+        ),
+        request_id
+      );
+    }
+
+    let persisted:
+      | {
+          run_id: string;
+          is_stub: true;
+          source: "portable_replay";
+        }
+      | undefined;
+
+    if (persist_stub) {
+      const existingRun = await readRunLogById(replayResult.result.run_id);
+      if (existingRun.ok) {
+        return withRequestId(
+          NextResponse.json(
+            { ok: false, error: "run_already_exists" },
+            { status: 409 }
+          ),
+          request_id
+        );
+      }
+      if (existingRun.reason !== "not_found") {
+        return withRequestId(
+          NextResponse.json({ ok: false, error: "invalid" }, { status: 400 }),
+          request_id
+        );
+      }
+
+      await writeRunLog(replayResult.result.runlog_stub);
+      persisted = {
+        run_id: replayResult.result.run_id,
+        is_stub: true,
+        source: "portable_replay"
+      };
+    }
+
+    const successPayload = {
+      ok: true,
+      replay: {
+        run_id: replayResult.result.replay.run_id,
+        gating_decision: replayResult.result.replay.gating_decision,
+        decision_trace: replayResult.result.replay.decision_trace
+      },
+      compare: {
+        baseline_run_id: replayResult.result.compare.baseline_run_id,
+        baseline: replayResult.result.compare.baseline,
+        match: replayResult.result.compare.match,
+        diff: replayResult.result.compare.diff
+      },
+      ...(persisted ? { persisted } : {})
+    };
+
+    const parsedSuccessPayload = EvidenceReplayResponseV0Schema.safeParse(successPayload);
+    if (!parsedSuccessPayload.success) {
+      const details = buildContractViolationDetails(parsedSuccessPayload.error.issues);
+      return buildInternalErrorResponse({
+        request_id,
+        code: "contract_violation",
+        contractViolationDetails: details
+      });
+    }
+
+    return withRequestId(NextResponse.json(parsedSuccessPayload.data), request_id);
   } catch {
     return buildInternalErrorResponse({
       request_id,
