@@ -316,6 +316,11 @@ export function RadiographyPanel({
                           <td className="px-2 py-1 align-top">{item.created_at}</td>
                           <td className="px-2 py-1 align-top font-mono text-[11px] text-zinc-200">
                             {item.run_id}
+                            {item.is_stub || item.source === "imported_bundle" ? (
+                              <div className="mt-1 text-[10px] text-emerald-300">
+                                Imported (stub)
+                              </div>
+                            ) : null}
                           </td>
                           <td className="px-2 py-1 align-top">{item.status}</td>
                           <td className="px-2 py-1 align-top">{item.core_percent}</td>

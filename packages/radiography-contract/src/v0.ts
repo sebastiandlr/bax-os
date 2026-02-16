@@ -304,6 +304,18 @@ export const DecisionTraceEntryV0Schema = z
   .strict();
 export type DecisionTraceEntryV0 = z.infer<typeof DecisionTraceEntryV0Schema>;
 
+export const RadiographyRunLogSourceV0Enum = z.enum(["local_run", "imported_bundle"]);
+export type RadiographyRunLogSourceV0 = z.infer<typeof RadiographyRunLogSourceV0Enum>;
+
+export const RadiographyRunLogImportedFromV0Schema = z
+  .object({
+    bundle_version: z.string().min(1)
+  })
+  .strict();
+export type RadiographyRunLogImportedFromV0 = z.infer<
+  typeof RadiographyRunLogImportedFromV0Schema
+>;
+
 export const RadiographyRunLogV0Schema = z
   .object({
     runlog_version: z.literal(RADIOGRAPHY_RUNLOG_V0_VERSION),
@@ -315,6 +327,9 @@ export const RadiographyRunLogV0Schema = z
     outputs: RadiographyRunLogOutputsV0Schema,
     debug: RadiographyRunLogDebugV0Schema.optional(),
     decision_trace: z.array(DecisionTraceEntryV0Schema).optional(),
+    source: RadiographyRunLogSourceV0Enum.optional(),
+    is_stub: z.boolean().optional(),
+    imported_from: RadiographyRunLogImportedFromV0Schema.optional(),
     errors: z
       .array(
         z

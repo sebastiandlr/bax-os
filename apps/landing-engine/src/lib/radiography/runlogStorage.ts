@@ -35,6 +35,8 @@ export type RunLogSummary = {
   reason_codes: string[];
   seed_urls_count: number;
   unique_hosts_count: number;
+  source?: "local_run" | "imported_bundle";
+  is_stub?: boolean;
   top_blockers?: string[];
 };
 
@@ -69,6 +71,8 @@ const toRunLogSummary = (runlog: RadiographyRunLogV0): RunLogSummary => {
     reason_codes: runlog.outputs.gating_decision.reason_codes,
     seed_urls_count: runlog.inputs.seed_urls.count,
     unique_hosts_count: runlog.inputs.seed_urls.unique_hosts.length,
+    source: runlog.source ?? "local_run",
+    is_stub: runlog.is_stub,
     top_blockers: runlog.debug?.top_blockers
   };
 };

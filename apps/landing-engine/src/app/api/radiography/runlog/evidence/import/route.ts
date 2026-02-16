@@ -43,7 +43,7 @@ export async function POST(request: Request) {
   const result = await importEvidenceBundle(parsedBody.data.bundle);
   if (!result.ok) {
     const status =
-      result.error === "already_exists"
+      result.error === "run_already_exists"
         ? 409
         : result.error === "integrity_mismatch"
           ? 409

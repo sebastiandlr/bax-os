@@ -7,6 +7,7 @@ import {
   CORE_FIELDS_COUNT_V0,
   CORE_FIELDS_V0,
   RADIOGRAPHY_RUNLOG_V0_VERSION,
+  ReasonCodeV0Enum,
   RadiographyRunLogV0Schema,
   type DecisionTraceEntryV0,
   type RadiographyOutputV0,
@@ -35,6 +36,10 @@ const EVIDENCE_DIR = process.env.BAX_EVIDENCE_DIR
   ? path.resolve(process.env.BAX_EVIDENCE_DIR)
   : path.join(detectLandingEngineRoot(), ".bax", "evidence");
 const RESOLVED_EVIDENCE_DIR = path.resolve(EVIDENCE_DIR);
+const RUNLOG_DIR = process.env.BAX_RUNLOG_DIR
+  ? path.resolve(process.env.BAX_RUNLOG_DIR)
+  : path.join(detectLandingEngineRoot(), ".bax", "runlogs");
+const RESOLVED_RUNLOG_DIR = path.resolve(RUNLOG_DIR);
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -775,6 +780,19 @@ const ensureEvidenceDir = async () => {
   await mkdir(EVIDENCE_DIR, { recursive: true });
 };
 
+const ensureRunLogDir = async () => {
+  await mkdir(RUNLOG_DIR, { recursive: true });
+};
+
+const getRunLogPath = (run_id: string) => {
+  ensureRunId(run_id);
+  const runlogPath = path.join(RUNLOG_DIR, `${run_id}.json`);
+  if (!isPathInsideDir(RESOLVED_RUNLOG_DIR, runlogPath)) {
+    throw new Error("invalid runlog path");
+  }
+  return runlogPath;
+};
+
 export const writeEvidencePackForRunLog = async (
   runlog: RadiographyRunLogV0
 ): Promise<EvidenceIndexV0> => {
@@ -945,7 +963,7 @@ type EvidenceBundleError =
   | "integrity_mismatch"
   | "artifact_not_json"
   | "bundle_too_large"
-  | "already_exists";
+  | "run_already_exists";
 
 type EvidenceBundleFailure = {
   ok: false;
@@ -1084,6 +1102,111 @@ const buildBundleDraftArtifacts = (
   return { ok: true, drafts };
 };
 
+const RUNLOG_GATING_STATUSES = new Set<"pass" | "soft_fail" | "hard_fail">([
+  "pass",
+  "soft_fail",
+  "hard_fail"
+]);
+
+const REASON_CODE_SET = new Set<ReasonCodeV0>(ReasonCodeV0Enum.options);
+
+const deriveStubGatingDecision = (drafts: BundleDraftArtifact[]) => {
+  const fallback = {
+    status: "hard_fail" as const,
+    core_percent: 0,
+    reason_codes: [] as ReasonCodeV0[]
+  };
+
+  const gatingArtifact = drafts.find((draft) => draft.metadata.kind === "gating");
+  if (!gatingArtifact) {
+    return fallback;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(gatingArtifact.contentText) as unknown;
+  } catch {
+    return fallback;
+  }
+
+  if (!isRecord(parsed)) {
+    return fallback;
+  }
+
+  const parsedStatus =
+    typeof parsed.status === "string" && RUNLOG_GATING_STATUSES.has(parsed.status as "pass" | "soft_fail" | "hard_fail")
+      ? (parsed.status as "pass" | "soft_fail" | "hard_fail")
+      : fallback.status;
+
+  const parsedCorePercent =
+    typeof parsed.core_percent === "number" && Number.isFinite(parsed.core_percent)
+      ? Math.max(0, Math.min(100, parsed.core_percent))
+      : fallback.core_percent;
+
+  const parsedReasonCodes = Array.isArray(parsed.reason_codes)
+    ? parsed.reason_codes
+        .filter((value): value is ReasonCodeV0 => typeof value === "string" && REASON_CODE_SET.has(value as ReasonCodeV0))
+        .slice(0, 10)
+    : fallback.reason_codes;
+
+  return {
+    status: parsedStatus,
+    core_percent: parsedCorePercent,
+    reason_codes: [...new Set(parsedReasonCodes)]
+  };
+};
+
+const buildImportedRunLogStub = (
+  bundle: EvidenceBundleV0,
+  drafts: BundleDraftArtifact[]
+): RadiographyRunLogV0 => {
+  const gatingDecision = deriveStubGatingDecision(drafts);
+
+  return {
+    runlog_version: RADIOGRAPHY_RUNLOG_V0_VERSION,
+    run_id: bundle.run_id,
+    created_at: bundle.created_at,
+    duration_ms: 0,
+    inputs: {
+      contractVersion: "0.1.0",
+      business_name: "IMPORTED_BUNDLE",
+      city: "UNKNOWN",
+      country: "UNKNOWN",
+      language: "es",
+      mode_hint: "lead",
+      seed_urls: {
+        count: 0,
+        unique_hosts: [],
+        url_hashes: []
+      }
+    },
+    buildspec: {
+      schemaVersion: "0.1.0",
+      eventSchemaVersion: "0.1.0",
+      mode: "lead",
+      capabilities: []
+    },
+    outputs: {
+      gating_decision: gatingDecision,
+      lint_report: {
+        items_count: 0,
+        hard_count: gatingDecision.status === "hard_fail" ? 1 : 0,
+        warn_count: gatingDecision.status === "soft_fail" ? 1 : 0,
+        top_reason_codes: gatingDecision.reason_codes
+      },
+      patch_stats: {
+        ops_count: 0
+      },
+      provenance_coverage_percent: 0
+    },
+    source: "imported_bundle",
+    is_stub: true,
+    imported_from: {
+      bundle_version: bundle.bundle_version
+    }
+  };
+};
+
 export const readEvidenceBundleByRunId = async (
   run_id: string
 ): Promise<EvidenceBundleSuccess | EvidenceBundleFailure> => {
@@ -1182,6 +1305,24 @@ export const importEvidenceBundle = async (
     return draftResult;
   }
 
+  const runlogStub = buildImportedRunLogStub(bundle, draftResult.drafts);
+  const parsedStub = RadiographyRunLogV0Schema.safeParse(runlogStub);
+  if (!parsedStub.success) {
+    return { ok: false, error: "invalid" };
+  }
+
+  await ensureRunLogDir();
+  const runlogPath = getRunLogPath(bundle.run_id);
+  try {
+    await readFile(runlogPath, "utf8");
+    return { ok: false, error: "run_already_exists" };
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code !== "ENOENT") {
+      return { ok: false, error: "invalid" };
+    }
+  }
+
   await ensureEvidenceDir();
   const evidenceRunDir = getEvidenceDirForRun(bundle.run_id);
   let existingEntries: string[] = [];
@@ -1195,7 +1336,7 @@ export const importEvidenceBundle = async (
   }
 
   if (existingEntries.length > 0) {
-    return { ok: false, error: "already_exists" };
+    return { ok: false, error: "run_already_exists" };
   }
 
   await mkdir(evidenceRunDir, { recursive: true });
@@ -1220,6 +1361,7 @@ export const importEvidenceBundle = async (
   };
 
   await writeFile(indexPath, toPrettyJson(evidenceIndex), "utf8");
+  await writeFile(runlogPath, toPrettyJson(parsedStub.data), "utf8");
 
   return {
     ok: true,

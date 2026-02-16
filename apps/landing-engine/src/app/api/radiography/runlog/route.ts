@@ -58,6 +58,8 @@ export async function GET(request: Request) {
       reason_codes: item.reason_codes,
       seed_urls_count: item.seed_urls_count,
       unique_hosts_count: item.unique_hosts_count,
+      source: item.source,
+      is_stub: item.is_stub,
       top_blockers: item.top_blockers
     }));
     return NextResponse.json({ ok: true, items });
