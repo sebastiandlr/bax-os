@@ -5,6 +5,7 @@ import {
   type ReasonCodeV0
 } from "@bax/radiography-contract";
 import type {
+  EvidenceBundleDraft,
   EvidenceIndex,
   RadiographyInputsState,
   RunLogDiff,
@@ -32,6 +33,7 @@ export type RadiographyViewController = {
   canRunRadiography: boolean;
   radiographyView: RadiographyView | null;
   currentRunLog: RadiographyRunLog | null;
+  selectedRunId: string | null;
   selectedRunLog: RadiographyRunLog | null;
   selectedRunEvidence: EvidenceIndex | null;
   selectedRunEvidenceError: string | null;
@@ -47,8 +49,19 @@ export type RadiographyViewController = {
   isRunLogPruneLoading: boolean;
   isRunLogReplayLoading: boolean;
   isRunLogDiffLoading: boolean;
+  bundleExporting: boolean;
+  bundleImporting: boolean;
+  bundleImportError: string | null;
+  bundleImportOk: string | null;
+  bundleDraft: EvidenceBundleDraft | null;
+  bundleDraftError: string | null;
   runLogOpsMessage: string | null;
   handleExportRadiography: () => void;
+  exportEvidenceBundle: (runId: string) => Promise<void>;
+  importEvidenceBundle: (bundle: unknown) => Promise<{ run_id: string }>;
+  setBundleDraftFromText: (jsonText: string) => void;
+  setBundleDraftFromUnknown: (value: unknown) => void;
+  clearBundleDraft: () => void;
   handleOpenLatestRunLog: () => Promise<void>;
   handleDownloadLatestRunLog: () => Promise<void>;
   handleRefreshRunLogs: () => Promise<void>;
@@ -251,6 +264,83 @@ const parseEvidenceIndexResponse = (
   };
 };
 
+const isEvidenceBundleArtifact = (value: unknown): value is EvidenceBundleDraft["artifacts"][number] => {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const artifact = value as Record<string, unknown>;
+  return (
+    typeof artifact.id === "string" &&
+    typeof artifact.kind === "string" &&
+    typeof artifact.sha256 === "string" &&
+    typeof artifact.bytes === "number" &&
+    typeof artifact.created_at === "string"
+  );
+};
+
+const parseEvidenceBundleDraft = (value: unknown): EvidenceBundleDraft | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const bundle = value as Record<string, unknown>;
+  if (
+    typeof bundle.bundle_version !== "string" ||
+    typeof bundle.run_id !== "string" ||
+    typeof bundle.created_at !== "string" ||
+    !bundle.evidence_index ||
+    typeof bundle.evidence_index !== "object" ||
+    !Array.isArray(bundle.artifacts)
+  ) {
+    return null;
+  }
+
+  const evidenceIndex = bundle.evidence_index as Record<string, unknown>;
+  if (
+    typeof evidenceIndex.run_id !== "string" ||
+    typeof evidenceIndex.created_at !== "string" ||
+    !Array.isArray(evidenceIndex.artifacts)
+  ) {
+    return null;
+  }
+
+  if (
+    !bundle.artifacts.every(isEvidenceBundleArtifact) ||
+    !evidenceIndex.artifacts.every(isEvidenceBundleArtifact)
+  ) {
+    return null;
+  }
+
+  return {
+    bundle_version: bundle.bundle_version,
+    run_id: bundle.run_id,
+    created_at: bundle.created_at,
+    evidence_index: {
+      run_id: evidenceIndex.run_id,
+      created_at: evidenceIndex.created_at,
+      artifacts: evidenceIndex.artifacts
+    },
+    artifacts: bundle.artifacts
+  };
+};
+
+const sanitizeImportErrorMessage = (status: number): string => {
+  if (status === 409) {
+    return "Run already exists. Change bundle.run_id + evidence_index.run_id to import as new run.";
+  }
+  if (status === 413) {
+    return "Bundle too large. Reduce bundle size or raise limit.";
+  }
+  if (status === 422) {
+    return "Bundle invalid or evidence integrity failed (sha/bytes/kind mismatch).";
+  }
+  if (status === 400) {
+    return "Malformed request.";
+  }
+  return "Server error. Check logs.";
+};
+
 const parseRunLogDiffResponse = (body: unknown): RunLogDiff | null => {
   if (!body || typeof body !== "object") {
     return null;
@@ -278,6 +368,7 @@ export const useRadiographyView = ({
   seedUrls
 }: UseRadiographyViewArgs): RadiographyViewController => {
   const [runLogWarning, setRunLogWarning] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedRunLog, setSelectedRunLog] = useState<RadiographyRunLog | null>(null);
   const [selectedRunEvidence, setSelectedRunEvidence] = useState<EvidenceIndex | null>(null);
   const [selectedRunEvidenceError, setSelectedRunEvidenceError] = useState<string | null>(null);
@@ -291,6 +382,12 @@ export const useRadiographyView = ({
   const [isRunLogPruneLoading, setIsRunLogPruneLoading] = useState(false);
   const [isRunLogReplayLoading, setIsRunLogReplayLoading] = useState(false);
   const [isRunLogDiffLoading, setIsRunLogDiffLoading] = useState(false);
+  const [bundleExporting, setBundleExporting] = useState(false);
+  const [bundleImporting, setBundleImporting] = useState(false);
+  const [bundleImportError, setBundleImportError] = useState<string | null>(null);
+  const [bundleImportOk, setBundleImportOk] = useState<string | null>(null);
+  const [bundleDraft, setBundleDraft] = useState<EvidenceBundleDraft | null>(null);
+  const [bundleDraftError, setBundleDraftError] = useState<string | null>(null);
   const [runLogOpsMessage, setRunLogOpsMessage] = useState<string | null>(null);
 
   const hasValidSpec = validation.ok && validation.spec.capabilities.length > 0;
@@ -490,6 +587,7 @@ export const useRadiographyView = ({
   }, []);
 
   const fetchEvidenceByRunId = useCallback(async (runId: string) => {
+    setSelectedRunId(runId);
     setSelectedRunEvidence(null);
     setSelectedRunEvidenceError(null);
 
@@ -515,6 +613,44 @@ export const useRadiographyView = ({
     } catch {
       setSelectedRunEvidenceError("Unable to load evidence pack.");
     }
+  }, []);
+
+  const setBundleDraftFromUnknown = useCallback((value: unknown) => {
+    const parsed = parseEvidenceBundleDraft(value);
+    if (!parsed) {
+      setBundleDraft(null);
+      setBundleDraftError("Bundle JSON is invalid or missing required fields.");
+      return;
+    }
+
+    setBundleDraft(parsed);
+    setBundleDraftError(null);
+    setBundleImportError(null);
+  }, []);
+
+  const setBundleDraftFromText = useCallback((jsonText: string) => {
+    const trimmed = jsonText.trim();
+    if (!trimmed) {
+      setBundleDraft(null);
+      setBundleDraftError(null);
+      setBundleImportError(null);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      setBundleDraftFromUnknown(parsed);
+    } catch {
+      setBundleDraft(null);
+      setBundleDraftError("Bundle JSON is not valid.");
+    }
+  }, [setBundleDraftFromUnknown]);
+
+  const clearBundleDraft = useCallback(() => {
+    setBundleDraft(null);
+    setBundleDraftError(null);
+    setBundleImportError(null);
+    setBundleImportOk(null);
   }, []);
 
   useEffect(() => {
@@ -572,11 +708,130 @@ export const useRadiographyView = ({
     };
   }, [currentRunLog, fetchEvidenceByRunId, fetchRunLogList, readRunLogById, seedUrls]);
 
+  const exportEvidenceBundle = useCallback(async (runId: string) => {
+    if (!runId) {
+      setRunLogOpsMessage("Select a run before exporting a bundle.");
+      return;
+    }
+
+    setBundleExporting(true);
+    setRunLogOpsMessage(null);
+
+    try {
+      const response = await fetch(
+        `/api/radiography/runlog/evidence/${encodeURIComponent(runId)}/bundle`,
+        { cache: "no-store" }
+      );
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          setRunLogOpsMessage("No evidence bundle found for the selected run.");
+          return;
+        }
+        if (response.status === 409 || response.status === 422) {
+          setRunLogOpsMessage("Evidence integrity check failed. Bundle export blocked.");
+          return;
+        }
+        if (response.status === 413) {
+          setRunLogOpsMessage("Bundle too large to export.");
+          return;
+        }
+        setRunLogOpsMessage("Bundle export failed.");
+        return;
+      }
+
+      const body = (await response.json()) as unknown;
+      const bundle = parseEvidenceBundleDraft(body);
+      if (!bundle) {
+        setRunLogOpsMessage("Bundle export failed.");
+        return;
+      }
+
+      downloadJson(`${bundle.run_id}.evidence.bundle.json`, bundle);
+      setRunLogOpsMessage(`Evidence bundle downloaded for ${bundle.run_id}.`);
+    } catch {
+      setRunLogOpsMessage("Bundle export failed.");
+    } finally {
+      setBundleExporting(false);
+    }
+  }, []);
+
+  const importEvidenceBundle = useCallback(async (bundle: unknown): Promise<{ run_id: string }> => {
+    const parsedDraft = parseEvidenceBundleDraft(bundle);
+    if (!parsedDraft) {
+      const message = "Bundle JSON is invalid or missing required fields.";
+      setBundleImportError(message);
+      throw new Error(message);
+    }
+
+    setBundleImporting(true);
+    setBundleImportError(null);
+    setBundleImportOk(null);
+    setRunLogOpsMessage(null);
+
+    try {
+      const response = await fetch("/api/radiography/runlog/evidence/import", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        cache: "no-store",
+        body: JSON.stringify({ bundle: parsedDraft })
+      });
+
+      if (!response.ok) {
+        const message = sanitizeImportErrorMessage(response.status);
+        setBundleImportError(message);
+        throw new Error(message);
+      }
+
+      const body = (await response.json()) as unknown;
+      if (!body || typeof body !== "object") {
+        const message = "Malformed request.";
+        setBundleImportError(message);
+        throw new Error(message);
+      }
+
+      const result = body as {
+        ok?: unknown;
+        run_id?: unknown;
+        imported?: {
+          artifacts?: unknown;
+        };
+      };
+
+      if (result.ok !== true || typeof result.run_id !== "string") {
+        const message = "Malformed request.";
+        setBundleImportError(message);
+        throw new Error(message);
+      }
+
+      setBundleImportOk(`Bundle imported for ${result.run_id}.`);
+      setBundleImportError(null);
+      setSelectedRunLog(null);
+      setRunLogDiff(null);
+      await fetchRunLogList();
+      setSelectedRunId(result.run_id);
+      await fetchEvidenceByRunId(result.run_id);
+      return { run_id: result.run_id };
+    } catch (error) {
+      setBundleImportError(
+        error instanceof Error && error.message
+          ? error.message
+          : "Server error. Check logs."
+      );
+      throw error;
+    } finally {
+      setBundleImporting(false);
+    }
+  }, [fetchEvidenceByRunId, fetchRunLogList]);
+
   const handleOpenLatestRunLog = async () => {
     try {
       const latest = await readLatestRunLog();
       setRunLogViewerTitle("Latest Run Log");
       if (!latest) {
+        setSelectedRunId(null);
         setSelectedRunLog(null);
         setSelectedRunEvidence(null);
         setSelectedRunEvidenceError(null);
@@ -768,6 +1023,7 @@ export const useRadiographyView = ({
       const result = await readRunLogById(runId);
       setRunLogViewerTitle(`Run Log ${runId}`);
       if (!result.runlog) {
+        setSelectedRunId(runId);
         setSelectedRunLog(null);
         setSelectedRunEvidence(null);
         setSelectedRunEvidenceError(
@@ -824,6 +1080,7 @@ export const useRadiographyView = ({
     canRunRadiography,
     radiographyView,
     currentRunLog,
+    selectedRunId,
     selectedRunLog,
     selectedRunEvidence,
     selectedRunEvidenceError,
@@ -839,8 +1096,19 @@ export const useRadiographyView = ({
     isRunLogPruneLoading,
     isRunLogReplayLoading,
     isRunLogDiffLoading,
+    bundleExporting,
+    bundleImporting,
+    bundleImportError,
+    bundleImportOk,
+    bundleDraft,
+    bundleDraftError,
     runLogOpsMessage,
     handleExportRadiography,
+    exportEvidenceBundle,
+    importEvidenceBundle,
+    setBundleDraftFromText,
+    setBundleDraftFromUnknown,
+    clearBundleDraft,
     handleOpenLatestRunLog,
     handleDownloadLatestRunLog,
     handleRefreshRunLogs,

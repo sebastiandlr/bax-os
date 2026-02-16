@@ -102,6 +102,7 @@ export default function StudioPage() {
               hasSeedUrls={radiography.hasSeedUrls}
               canRunRadiography={radiography.canRunRadiography}
               radiographyView={radiography.radiographyView}
+              selectedRunId={radiography.selectedRunId}
               selectedRunLog={radiography.selectedRunLog}
               selectedRunEvidence={radiography.selectedRunEvidence}
               selectedRunEvidenceError={radiography.selectedRunEvidenceError}
@@ -117,8 +118,19 @@ export default function StudioPage() {
               isRunLogPruneLoading={radiography.isRunLogPruneLoading}
               isRunLogReplayLoading={radiography.isRunLogReplayLoading}
               isRunLogDiffLoading={radiography.isRunLogDiffLoading}
+              bundleExporting={radiography.bundleExporting}
+              bundleImporting={radiography.bundleImporting}
+              bundleImportError={radiography.bundleImportError}
+              bundleImportOk={radiography.bundleImportOk}
+              bundleDraft={radiography.bundleDraft}
+              bundleDraftError={radiography.bundleDraftError}
               runLogOpsMessage={radiography.runLogOpsMessage}
               onExportRadiography={radiography.handleExportRadiography}
+              onExportEvidenceBundle={radiography.exportEvidenceBundle}
+              onImportEvidenceBundle={radiography.importEvidenceBundle}
+              onSetBundleDraftFromText={radiography.setBundleDraftFromText}
+              onSetBundleDraftFromUnknown={radiography.setBundleDraftFromUnknown}
+              onClearBundleDraft={radiography.clearBundleDraft}
               onOpenLatestRunLog={radiography.handleOpenLatestRunLog}
               onDownloadLatestRunLog={radiography.handleDownloadLatestRunLog}
               onRefreshRunLogs={radiography.handleRefreshRunLogs}
