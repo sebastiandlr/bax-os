@@ -111,6 +111,8 @@ export default function StudioPage() {
               isRunLogListLoading={radiography.isRunLogListLoading}
               runLogListError={radiography.runLogListError}
               isRunLogPruneLoading={radiography.isRunLogPruneLoading}
+              isRunLogReplayLoading={radiography.isRunLogReplayLoading}
+              isRunLogDiffLoading={radiography.isRunLogDiffLoading}
               runLogOpsMessage={radiography.runLogOpsMessage}
               onExportRadiography={radiography.handleExportRadiography}
               onOpenLatestRunLog={radiography.handleOpenLatestRunLog}
@@ -119,6 +121,8 @@ export default function StudioPage() {
               onOpenRunLogById={radiography.handleOpenRunLogById}
               onDownloadRunLogById={radiography.handleDownloadRunLogById}
               onPruneRunLogs={radiography.handlePruneRunLogs}
+              onReplayRunLog={radiography.handleReplayRunLog}
+              onComputeRunLogDiff={radiography.handleComputeRunLogDiff}
               onCloseLatestRunLog={radiography.handleCloseLatestRunLog}
             />
           </div>

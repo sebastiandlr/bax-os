@@ -1,14 +1,15 @@
-import "server-only";
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from "fs/promises";
 import path from "path";
 import {
-  RadiographyRunLogV0Schema,
   type RadiographyRunLogV0
 } from "@bax/radiography-contract";
-import { detectLandingEngineRoot } from "@/lib/spec/buildspecStorage";
+import { detectLandingEngineRoot } from "../spec/buildspecStorage";
+import { parseStoredRunLog, RUNLOG_RUN_ID_PATTERN } from "./runlogUtils";
 
-const APP_ROOT = detectLandingEngineRoot();
-const RUNLOG_DIR = path.join(APP_ROOT, ".bax", "runlogs");
+const ENV_RUNLOG_DIR = process.env.BAX_RUNLOG_DIR;
+const RUNLOG_DIR = ENV_RUNLOG_DIR
+  ? path.resolve(ENV_RUNLOG_DIR)
+  : path.join(detectLandingEngineRoot(), ".bax", "runlogs");
 const RESOLVED_RUNLOG_DIR = path.resolve(RUNLOG_DIR);
 
 export const RUNLOG_PATHS = {
@@ -33,10 +34,6 @@ export type RunLogSummary = {
   top_blockers?: string[];
 };
 
-const RUN_ID_PATTERN = /^[a-zA-Z0-9_-]{6,80}$/;
-const FORBIDDEN_KEY_NAMES = new Set(["path", "seed_urls_raw"]);
-const FORBIDDEN_STRING_PATTERNS = [/\/Users\//, /\.bax\/runlogs\//, /https?:\/\//i];
-
 const ensureRunLogDir = async () => {
   await mkdir(RUNLOG_DIR, { recursive: true });
 };
@@ -56,53 +53,6 @@ const isPathInsideRunLogDir = (filePath: string) => {
     resolvedFilePath === RESOLVED_RUNLOG_DIR ||
     resolvedFilePath.startsWith(`${RESOLVED_RUNLOG_DIR}${path.sep}`)
   );
-};
-
-const hasForbiddenRunLogContent = (
-  value: unknown,
-  trail: string[] = []
-): boolean => {
-  if (typeof value === "string") {
-    return FORBIDDEN_STRING_PATTERNS.some((pattern) => pattern.test(value));
-  }
-
-  if (Array.isArray(value)) {
-    return value.some((item) => hasForbiddenRunLogContent(item, trail));
-  }
-
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const record = value as Record<string, unknown>;
-  for (const [key, childValue] of Object.entries(record)) {
-    if (FORBIDDEN_KEY_NAMES.has(key)) {
-      return true;
-    }
-
-    if (trail.join(".") === "inputs.seed_urls" && key === "urls") {
-      return true;
-    }
-
-    if (hasForbiddenRunLogContent(childValue, [...trail, key])) {
-      return true;
-    }
-  }
-
-  return false;
-};
-
-const parseStoredRunLog = (value: unknown): RadiographyRunLogV0 | null => {
-  if (hasForbiddenRunLogContent(value)) {
-    return null;
-  }
-
-  const parsed = RadiographyRunLogV0Schema.safeParse(value);
-  if (!parsed.success) {
-    return null;
-  }
-
-  return parsed.data;
 };
 
 const toRunLogSummary = (runlog: RadiographyRunLogV0): RunLogSummary => {
@@ -259,7 +209,7 @@ type ReadRunLogByIdResult =
   | { ok: false; reason: "not_found" | "invalid" };
 
 export const readRunLogById = async (run_id: string): Promise<ReadRunLogByIdResult> => {
-  if (!RUN_ID_PATTERN.test(run_id)) {
+  if (!RUNLOG_RUN_ID_PATTERN.test(run_id)) {
     return { ok: false, reason: "invalid" };
   }
 

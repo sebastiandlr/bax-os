@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { readRunLogById } from "@/lib/radiography/runlogStorage";
+import { RUNLOG_RUN_ID_PATTERN } from "@/lib/radiography/runlogUtils";
 
 export const runtime = "nodejs";
-const RUN_ID_PARAM_PATTERN = /^[a-zA-Z0-9_-]{6,80}$/;
 
 type RunLogRouteContext = {
   params: Promise<{
@@ -13,7 +13,7 @@ type RunLogRouteContext = {
 export async function GET(_request: Request, context: RunLogRouteContext) {
   try {
     const { run_id } = await context.params;
-    if (!RUN_ID_PARAM_PATTERN.test(run_id)) {
+    if (!RUNLOG_RUN_ID_PATTERN.test(run_id)) {
       return NextResponse.json({ ok: false, reason: "invalid" });
     }
 

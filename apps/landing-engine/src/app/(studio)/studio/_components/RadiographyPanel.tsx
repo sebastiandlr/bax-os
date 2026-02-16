@@ -21,6 +21,8 @@ type RadiographyPanelProps = {
   isRunLogListLoading: boolean;
   runLogListError: string | null;
   isRunLogPruneLoading: boolean;
+  isRunLogReplayLoading: boolean;
+  isRunLogDiffLoading: boolean;
   runLogOpsMessage: string | null;
   onExportRadiography: () => void;
   onOpenLatestRunLog: () => Promise<void>;
@@ -29,6 +31,12 @@ type RadiographyPanelProps = {
   onOpenRunLogById: (runId: string) => Promise<void>;
   onDownloadRunLogById: (runId: string) => Promise<void>;
   onPruneRunLogs: (maxFiles: number, maxAgeDays: number) => Promise<void>;
+  onReplayRunLog: (
+    runId: string,
+    seedUrlsRaw: string[],
+    mode: "persist" | "dry_run"
+  ) => Promise<void>;
+  onComputeRunLogDiff: (fromRunId: string, toRunId: string) => Promise<void>;
   onCloseLatestRunLog: () => void;
 };
 
@@ -46,6 +54,8 @@ export function RadiographyPanel({
   isRunLogListLoading,
   runLogListError,
   isRunLogPruneLoading,
+  isRunLogReplayLoading,
+  isRunLogDiffLoading,
   runLogOpsMessage,
   onExportRadiography,
   onOpenLatestRunLog,
@@ -54,9 +64,16 @@ export function RadiographyPanel({
   onOpenRunLogById,
   onDownloadRunLogById,
   onPruneRunLogs,
+  onReplayRunLog,
+  onComputeRunLogDiff,
   onCloseLatestRunLog
 }: RadiographyPanelProps) {
   const [isPruneDialogOpen, setIsPruneDialogOpen] = useState(false);
+  const [isReplayDialogOpen, setIsReplayDialogOpen] = useState(false);
+  const [replayRunId, setReplayRunId] = useState("");
+  const [replaySeedUrlsText, setReplaySeedUrlsText] = useState("");
+  const [diffFromRunId, setDiffFromRunId] = useState("");
+  const [diffToRunId, setDiffToRunId] = useState("");
   const [maxFilesInput, setMaxFilesInput] = useState("200");
   const [maxAgeDaysInput, setMaxAgeDaysInput] = useState("14");
 
@@ -69,6 +86,13 @@ export function RadiographyPanel({
 
     await onPruneRunLogs(maxFiles, maxAgeDays);
     setIsPruneDialogOpen(false);
+  };
+
+  const getReplaySeedUrls = () => {
+    return replaySeedUrlsText
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
   };
 
   return (
@@ -219,6 +243,16 @@ export function RadiographyPanel({
                               >
                                 Download
                               </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setReplayRunId(item.run_id);
+                                  setIsReplayDialogOpen(true);
+                                }}
+                                className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500"
+                              >
+                                Replay
+                              </button>
                             </div>
                           </td>
                         </tr>
@@ -232,14 +266,57 @@ export function RadiographyPanel({
             <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-950/40 p-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-zinc-300">RunLog Ops</span>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsPruneDialogOpen(true);
+                    }}
+                    className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500"
+                  >
+                    {isRunLogPruneLoading ? "Pruning..." : "Prune Run Logs"}
+                  </button>
+                </div>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <select
+                  value={diffFromRunId}
+                  onChange={(event) => {
+                    setDiffFromRunId(event.target.value);
+                  }}
+                  className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
+                >
+                  <option value="">Diff from...</option>
+                  {runLogList.map((item) => (
+                    <option key={`from-${item.run_id}`} value={item.run_id}>
+                      {item.run_id}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={diffToRunId}
+                  onChange={(event) => {
+                    setDiffToRunId(event.target.value);
+                  }}
+                  className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
+                >
+                  <option value="">Diff to...</option>
+                  {runLogList.map((item) => (
+                    <option key={`to-${item.run_id}`} value={item.run_id}>
+                      {item.run_id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="mt-2">
                 <button
                   type="button"
                   onClick={() => {
-                    setIsPruneDialogOpen(true);
+                    void onComputeRunLogDiff(diffFromRunId, diffToRunId);
                   }}
                   className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500"
                 >
-                  {isRunLogPruneLoading ? "Pruning..." : "Prune Run Logs"}
+                  {isRunLogDiffLoading ? "Diffing..." : "Compute Diff"}
                 </button>
               </div>
               {runLogOpsMessage ? (
@@ -297,6 +374,51 @@ export function RadiographyPanel({
                   className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500"
                 >
                   Confirm Prune
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {isReplayDialogOpen ? (
+            <div className="mt-3 rounded-md border border-zinc-700 bg-zinc-900/80 p-3">
+              <div className="text-sm text-zinc-200">Replay Run Log: {replayRunId}</div>
+              <label className="mt-2 block text-xs text-zinc-400">
+                seed_urls_override (one URL per line)
+                <textarea
+                  value={replaySeedUrlsText}
+                  onChange={(event) => {
+                    setReplaySeedUrlsText(event.target.value);
+                  }}
+                  className="mt-1 min-h-[90px] w-full rounded-md border border-zinc-700 bg-zinc-950 p-2 font-mono text-xs text-zinc-200"
+                />
+              </label>
+              <div className="mt-3 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsReplayDialogOpen(false);
+                  }}
+                  className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void onReplayRunLog(replayRunId, getReplaySeedUrls(), "persist");
+                  }}
+                  className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500"
+                >
+                  {isRunLogReplayLoading ? "Replaying..." : "Replay (persist)"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void onReplayRunLog(replayRunId, getReplaySeedUrls(), "dry_run");
+                  }}
+                  className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500"
+                >
+                  {isRunLogReplayLoading ? "Replaying..." : "Replay (dry-run)"}
                 </button>
               </div>
             </div>
