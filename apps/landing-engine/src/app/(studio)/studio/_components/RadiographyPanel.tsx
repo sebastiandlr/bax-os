@@ -1,6 +1,9 @@
 import { useState } from "react";
 import type {
   EvidenceBundleDraft,
+  EvidenceReplayError,
+  EvidenceReplayOptionsDraft,
+  EvidenceReplayResult,
   EvidenceIndex,
   RadiographyRunLog,
   RadiographyView,
@@ -41,6 +44,10 @@ type RadiographyPanelProps = {
   bundleImportOk: string | null;
   bundleDraft: EvidenceBundleDraft | null;
   bundleDraftError: string | null;
+  replayRunning: boolean;
+  replayError: EvidenceReplayError | null;
+  replayResult: EvidenceReplayResult | null;
+  replayOptionsDraft: EvidenceReplayOptionsDraft;
   runLogOpsMessage: string | null;
   onExportRadiography: () => void;
   onExportEvidenceBundle: (runId: string) => Promise<void>;
@@ -48,6 +55,10 @@ type RadiographyPanelProps = {
   onSetBundleDraftFromText: (jsonText: string) => void;
   onSetBundleDraftFromUnknown: (value: unknown) => void;
   onClearBundleDraft: () => void;
+  onSetReplayOptionsDraft: (value: EvidenceReplayOptionsDraft) => void;
+  onReplayEvidenceBundle: (
+    options?: Partial<EvidenceReplayOptionsDraft>
+  ) => Promise<void>;
   onOpenLatestRunLog: () => Promise<void>;
   onDownloadLatestRunLog: () => Promise<void>;
   onRefreshRunLogs: () => Promise<void>;
@@ -90,6 +101,10 @@ export function RadiographyPanel({
   bundleImportOk,
   bundleDraft,
   bundleDraftError,
+  replayRunning,
+  replayError,
+  replayResult,
+  replayOptionsDraft,
   runLogOpsMessage,
   onExportRadiography,
   onExportEvidenceBundle,
@@ -97,6 +112,8 @@ export function RadiographyPanel({
   onSetBundleDraftFromText,
   onSetBundleDraftFromUnknown,
   onClearBundleDraft,
+  onSetReplayOptionsDraft,
+  onReplayEvidenceBundle,
   onOpenLatestRunLog,
   onDownloadLatestRunLog,
   onRefreshRunLogs,
@@ -158,6 +175,39 @@ export function RadiographyPanel({
   const MAX_BUNDLE_FILE_BYTES = 2 * 1024 * 1024;
   const activeBundleRunId = selectedRunId ?? selectedRunEvidence?.run_id ?? selectedRunLog?.run_id ?? null;
   const bundlePreviewItems = bundleDraft?.evidence_index.artifacts.slice(0, 10) ?? [];
+  const replayDecisionTrace = replayResult?.replay.decision_trace.slice(0, 10) ?? [];
+  const replayReasonCodesAdded = replayResult?.compare.diff.reason_codes.added ?? [];
+  const replayReasonCodesRemoved = replayResult?.compare.diff.reason_codes.removed ?? [];
+
+  const replayBlockedMessage =
+    replayOptionsDraft.source === "draft"
+      ? bundleDraftError
+        ? "Replay unavailable: bundle draft is invalid."
+        : !bundleDraft
+          ? "Replay unavailable: provide a bundle draft first."
+          : null
+      : !activeBundleRunId
+        ? "Replay unavailable: select a run first."
+        : null;
+
+  const toSafeReplayWarning = (warning: string) => {
+    if (
+      warning.includes("/Users/") ||
+      warning.includes("\\Users\\") ||
+      warning.includes(".bax/runlogs") ||
+      warning.includes("http://") ||
+      warning.includes("https://")
+    ) {
+      return "integrity_mismatch";
+    }
+
+    const artifactCandidate = warning.includes(":") ? warning.split(":").at(-1) : warning;
+    const normalized = artifactCandidate ? artifactCandidate.trim() : "";
+    if (/^[a-zA-Z0-9_-]{3,120}$/.test(normalized)) {
+      return normalized;
+    }
+    return warning.trim();
+  };
 
   const handleBundleTextChange = (value: string) => {
     setBundleText(value);
@@ -846,6 +896,190 @@ export function RadiographyPanel({
                 <div className="text-xs text-emerald-300">{bundleImportOk}</div>
               ) : null}
             </div>
+          </div>
+
+          <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/50 p-3">
+            <div className="text-zinc-200">Evidence Replay</div>
+            <div className="mt-2 grid gap-2 text-xs text-zinc-300">
+              <div className="text-zinc-400">Bundle source</div>
+              <label className="inline-flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="replay-source"
+                  checked={replayOptionsDraft.source === "draft"}
+                  onChange={() => {
+                    onSetReplayOptionsDraft({
+                      ...replayOptionsDraft,
+                      source: "draft"
+                    });
+                  }}
+                />
+                <span>Use bundle draft</span>
+              </label>
+              <label className="inline-flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="replay-source"
+                  checked={replayOptionsDraft.source === "selected_run"}
+                  onChange={() => {
+                    onSetReplayOptionsDraft({
+                      ...replayOptionsDraft,
+                      source: "selected_run"
+                    });
+                  }}
+                />
+                <span>Use selected run bundle</span>
+              </label>
+            </div>
+
+            <div className="mt-3 grid gap-2 text-xs text-zinc-300">
+              <label className="inline-flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={replayOptionsDraft.strict}
+                  onChange={(event) => {
+                    onSetReplayOptionsDraft({
+                      ...replayOptionsDraft,
+                      strict: event.target.checked
+                    });
+                  }}
+                />
+                <span>Strict integrity</span>
+              </label>
+              <label className="inline-flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={replayOptionsDraft.persist_stub}
+                  onChange={(event) => {
+                    onSetReplayOptionsDraft({
+                      ...replayOptionsDraft,
+                      persist_stub: event.target.checked
+                    });
+                  }}
+                />
+                <span>Persist stub</span>
+              </label>
+            </div>
+
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={replayRunning || Boolean(replayBlockedMessage)}
+                onClick={() => {
+                  void onReplayEvidenceBundle();
+                }}
+                className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {replayRunning ? "Replaying..." : "Replay"}
+              </button>
+              <button
+                type="button"
+                disabled={replayRunning || Boolean(replayBlockedMessage)}
+                onClick={() => {
+                  void onReplayEvidenceBundle({ persist_stub: true });
+                }}
+                className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {replayRunning ? "Replaying..." : "Replay & Persist Stub"}
+              </button>
+            </div>
+
+            {replayBlockedMessage ? (
+              <div className="mt-2 text-xs text-zinc-500">{replayBlockedMessage}</div>
+            ) : null}
+
+            {replayError ? (
+              <div className="mt-2 text-xs text-rose-300">
+                {replayError.message}
+              </div>
+            ) : null}
+
+            {replayResult ? (
+              <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-950/40 p-2 text-xs text-zinc-300">
+                <div className="font-mono text-zinc-200">
+                  replay.run_id: {replayResult.replay.run_id}
+                </div>
+                <div className="mt-1 text-zinc-400">
+                  gating:{" "}
+                  <span className="text-zinc-200">
+                    {replayResult.replay.gating_decision.status} (
+                    {replayResult.replay.gating_decision.core_percent})
+                  </span>
+                </div>
+                <div className="mt-1 text-zinc-400">
+                  reason_codes:{" "}
+                  <span className="text-zinc-200">
+                    {replayResult.replay.gating_decision.reason_codes.length > 0
+                      ? replayResult.replay.gating_decision.reason_codes.join(", ")
+                      : "none"}
+                  </span>
+                </div>
+                <div className="mt-2 text-zinc-400">
+                  compare.match:{" "}
+                  <span className="text-zinc-200">
+                    {replayResult.compare.match ? "true" : "false"}
+                  </span>
+                </div>
+                <div className="mt-1 text-zinc-400">
+                  baseline_run_id: <span className="text-zinc-200">n/a</span>
+                </div>
+                <div className="mt-1 text-zinc-400">
+                  baseline → replay:{" "}
+                  <span className="text-zinc-200">
+                    {replayResult.compare.baseline.status} →{" "}
+                    {replayResult.replay.gating_decision.status}
+                  </span>
+                </div>
+                <div className="mt-1 text-zinc-400">
+                  status_changed:{" "}
+                  <span className="text-zinc-200">
+                    {replayResult.compare.diff.status_changed ? "true" : "false"}
+                  </span>
+                </div>
+                <div className="mt-1 text-zinc-400">
+                  core_percent_delta:{" "}
+                  <span className="text-zinc-200">
+                    {replayResult.compare.diff.core_percent_delta}
+                  </span>
+                </div>
+                <div className="mt-1 text-zinc-400">
+                  blockers added/removed:{" "}
+                  <span className="text-zinc-200">
+                    {replayReasonCodesAdded.length}/{replayReasonCodesRemoved.length}
+                  </span>
+                </div>
+                <div className="mt-2 text-zinc-400">decision_trace (first 10)</div>
+                <ul className="mt-1 list-disc pl-5 text-zinc-300">
+                  {replayDecisionTrace.length > 0 ? (
+                    replayDecisionTrace.map((trace) => (
+                      <li key={`${trace.code}-${trace.severity}`}>
+                        {trace.code} ({trace.severity})
+                      </li>
+                    ))
+                  ) : (
+                    <li>none</li>
+                  )}
+                </ul>
+                <div className="mt-2 text-zinc-400">integrity warnings</div>
+                <ul className="mt-1 list-disc pl-5 text-zinc-300">
+                  {replayResult.compare.diff.integrity_warnings.length > 0 ? (
+                    replayResult.compare.diff.integrity_warnings.map((warning) => (
+                      <li key={warning}>{toSafeReplayWarning(warning)}</li>
+                    ))
+                  ) : (
+                    <li>none</li>
+                  )}
+                </ul>
+                {replayResult.persisted ? (
+                  <div className="mt-2 text-zinc-400">
+                    persisted:{" "}
+                    <span className="font-mono text-zinc-200">
+                      {replayResult.persisted.run_id}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
 
           {isLatestRunLogOpen ? (
