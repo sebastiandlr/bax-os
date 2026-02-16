@@ -347,3 +347,49 @@ export const RadiographyRunLogV0Schema = z
   })
   .strict();
 export type RadiographyRunLogV0 = z.infer<typeof RadiographyRunLogV0Schema>;
+
+export const EvidenceReplayCompareV0Schema = z
+  .object({
+    /** Baseline run id (source bundle.run_id). */
+    baseline_run_id: z.string().min(1).regex(/^[a-z0-9-]+$/i),
+    baseline: GatingDecisionV0Schema,
+    match: z.boolean(),
+    diff: z
+      .object({
+        status_changed: z.boolean(),
+        core_percent_delta: z.number(),
+        reason_codes: z
+          .object({
+            added: z.array(ReasonCodeV0Enum),
+            removed: z.array(ReasonCodeV0Enum)
+          })
+          .strict(),
+        integrity_warnings: z.array(z.string())
+      })
+      .strict()
+  })
+  .strict();
+export type EvidenceReplayCompareV0 = z.infer<typeof EvidenceReplayCompareV0Schema>;
+
+export const EvidenceReplayResponseV0Schema = z
+  .object({
+    ok: z.literal(true),
+    replay: z
+      .object({
+        run_id: z.string().min(1).regex(/^[a-z0-9-]+$/i),
+        gating_decision: GatingDecisionV0Schema,
+        decision_trace: z.array(DecisionTraceEntryV0Schema)
+      })
+      .strict(),
+    compare: EvidenceReplayCompareV0Schema,
+    persisted: z
+      .object({
+        run_id: z.string().min(1).regex(/^[a-z0-9-]+$/i),
+        is_stub: z.literal(true),
+        source: z.literal("portable_replay")
+      })
+      .strict()
+      .optional()
+  })
+  .strict();
+export type EvidenceReplayResponseV0 = z.infer<typeof EvidenceReplayResponseV0Schema>;
