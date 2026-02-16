@@ -12,3 +12,5 @@ Spec → Preview → Deploy.
 - docs/ops/landing-express.md
 - docs/architecture/hybrid-repo-model.md
 - docs/mvp/roadmap.md
+- docs/radiography/README.md
+- docs/adr/README.md
