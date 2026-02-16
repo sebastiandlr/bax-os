@@ -37,11 +37,18 @@ const buildContractViolationDetails = (issues: z.ZodIssue[]) => {
   const topLevelPaths = new Set<string>();
 
   for (const issue of issues) {
-    if (issue.path.length === 0 || typeof issue.path[0] !== "string") {
+    if (issue.path.length === 0) {
       topLevelPaths.add("root");
       continue;
     }
-    topLevelPaths.add(issue.path[0]);
+
+    const firstSegment = issue.path[0];
+    if (typeof firstSegment === "string" || typeof firstSegment === "number") {
+      topLevelPaths.add(String(firstSegment));
+      continue;
+    }
+
+    topLevelPaths.add("root");
   }
 
   return {
@@ -144,11 +151,16 @@ export async function POST(request: Request) {
 
   const parsedSuccessPayload = EvidenceReplayResponseV0Schema.safeParse(successPayload);
   if (!parsedSuccessPayload.success) {
+    const details = buildContractViolationDetails(parsedSuccessPayload.error.issues);
+    console.error("radiography_replay_contract_violation", {
+      issues_count: details.issues_count,
+      issues_paths: details.issues_paths
+    });
     return NextResponse.json(
       {
         ok: false,
         error: "internal_error",
-        details: buildContractViolationDetails(parsedSuccessPayload.error.issues)
+        details
       },
       { status: 500 }
     );

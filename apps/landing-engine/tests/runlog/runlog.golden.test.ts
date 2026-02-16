@@ -1375,6 +1375,94 @@ test("evidence replay returns deterministic output with match=true for untampere
   assert.deepEqual(bodyB, bodyA);
 });
 
+test("evidence replay returns leak-safe contract_violation details on internal schema mismatch", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const runlogRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/route.ts"
+  );
+  const bundleRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/evidence/[run_id]/bundle/route.ts");
+  const replayRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/evidence/replay/route.ts"
+  );
+
+  const runId = "run-replay-contract-violation";
+  const postResponse = await runlogRoute.POST(
+    new Request("http://localhost/api/radiography/runlog", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runlog: createRunLogFixture({ run_id: runId }),
+        seed_urls_raw: ["https://example.com/replay-contract"]
+      })
+    })
+  );
+  assert.equal(postResponse.status, 200);
+
+  const bundleResponse = await bundleRoute.GET(
+    new Request(`http://localhost/api/radiography/runlog/evidence/${runId}/bundle`),
+    { params: Promise.resolve({ run_id: runId }) }
+  );
+  assert.equal(bundleResponse.status, 200);
+  const bundle = JSON.parse(await bundleResponse.text()) as unknown;
+
+  const schemaMutable = EvidenceReplayResponseV0Schema as unknown as {
+    safeParse: (...args: unknown[]) => unknown;
+  };
+  const originalSafeParse = schemaMutable.safeParse;
+  schemaMutable.safeParse = () => ({
+    success: false,
+    error: {
+      issues: [
+        { code: "custom", path: ["replay", "run_id"], message: "x" },
+        { code: "custom", path: ["compare", "baseline_run_id"], message: "x" },
+        { code: "custom", path: [0, "x"], message: "x" },
+        { code: "custom", path: ["compare", "diff"], message: "x" },
+        { code: "custom", path: [], message: "x" }
+      ]
+    }
+  });
+
+  try {
+    const replayResponse = await replayRoute.POST(
+      new Request("http://localhost/api/radiography/runlog/evidence/replay", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ bundle })
+      })
+    );
+    assert.equal(replayResponse.status, 500);
+    const replayBody = (await replayResponse.json()) as {
+      ok?: boolean;
+      error?: string;
+      details?: {
+        code?: string;
+        issues_count?: number;
+        issues_paths?: string[];
+      };
+    };
+    assert.equal(replayBody.ok, false);
+    assert.equal(replayBody.error, "internal_error");
+    assert.equal(replayBody.details?.code, "contract_violation");
+    assert.equal(replayBody.details?.issues_count, 5);
+    assert.deepEqual(replayBody.details?.issues_paths, [
+      "0",
+      "compare",
+      "replay",
+      "root"
+    ]);
+    assertNoLeakPatterns(JSON.stringify(replayBody));
+  } finally {
+    schemaMutable.safeParse = originalSafeParse;
+  }
+});
+
 test("evidence replay strict mode fails with 409 integrity_mismatch when bundle is tampered", async () => {
   await resetRunlogDir();
   await resetEvidenceDir();
