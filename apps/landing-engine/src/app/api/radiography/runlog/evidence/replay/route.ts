@@ -35,6 +35,7 @@ const formatIssues = (issues: { path: PropertyKey[]; message: string }[]) => {
 
 const buildContractViolationDetails = (issues: z.ZodIssue[]) => {
   const topLevelPaths = new Set<string>();
+  const allowedTopLevelKeys = new Set(["replay", "compare", "persisted"]);
 
   for (const issue of issues) {
     if (issue.path.length === 0) {
@@ -43,8 +44,8 @@ const buildContractViolationDetails = (issues: z.ZodIssue[]) => {
     }
 
     const firstSegment = issue.path[0];
-    if (typeof firstSegment === "string" || typeof firstSegment === "number") {
-      topLevelPaths.add(String(firstSegment));
+    if (typeof firstSegment === "string" && allowedTopLevelKeys.has(firstSegment)) {
+      topLevelPaths.add(firstSegment);
       continue;
     }
 
