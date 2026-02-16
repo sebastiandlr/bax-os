@@ -1451,12 +1451,13 @@ test("evidence replay returns leak-safe contract_violation details on internal s
     assert.equal(replayBody.error, "internal_error");
     assert.equal(replayBody.details?.code, "contract_violation");
     assert.equal(replayBody.details?.issues_count, 5);
-    assert.deepEqual(replayBody.details?.issues_paths, [
-      "0",
-      "compare",
-      "replay",
-      "root"
-    ]);
+    assert.deepEqual(replayBody.details?.issues_paths, ["compare", "replay", "root"]);
+    assert.equal(
+      (replayBody.details?.issues_paths ?? []).every((pathKey) =>
+        ["root", "replay", "compare", "persisted"].includes(pathKey)
+      ),
+      true
+    );
     assertNoLeakPatterns(JSON.stringify(replayBody));
   } finally {
     schemaMutable.safeParse = originalSafeParse;
