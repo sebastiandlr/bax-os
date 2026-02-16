@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { RadiographyView, RunLogListItem } from "../_lib/types";
 
 type RunSummary = {
@@ -19,12 +20,15 @@ type RadiographyPanelProps = {
   runLogList: RunLogListItem[];
   isRunLogListLoading: boolean;
   runLogListError: string | null;
+  isRunLogPruneLoading: boolean;
+  runLogOpsMessage: string | null;
   onExportRadiography: () => void;
   onOpenLatestRunLog: () => Promise<void>;
   onDownloadLatestRunLog: () => Promise<void>;
   onRefreshRunLogs: () => Promise<void>;
   onOpenRunLogById: (runId: string) => Promise<void>;
   onDownloadRunLogById: (runId: string) => Promise<void>;
+  onPruneRunLogs: (maxFiles: number, maxAgeDays: number) => Promise<void>;
   onCloseLatestRunLog: () => void;
 };
 
@@ -41,14 +45,32 @@ export function RadiographyPanel({
   runLogList,
   isRunLogListLoading,
   runLogListError,
+  isRunLogPruneLoading,
+  runLogOpsMessage,
   onExportRadiography,
   onOpenLatestRunLog,
   onDownloadLatestRunLog,
   onRefreshRunLogs,
   onOpenRunLogById,
   onDownloadRunLogById,
+  onPruneRunLogs,
   onCloseLatestRunLog
 }: RadiographyPanelProps) {
+  const [isPruneDialogOpen, setIsPruneDialogOpen] = useState(false);
+  const [maxFilesInput, setMaxFilesInput] = useState("200");
+  const [maxAgeDaysInput, setMaxAgeDaysInput] = useState("14");
+
+  const handleConfirmPrune = async () => {
+    const maxFiles = Number.parseInt(maxFilesInput, 10);
+    const maxAgeDays = Number.parseInt(maxAgeDaysInput, 10);
+    if (!Number.isFinite(maxFiles) || !Number.isFinite(maxAgeDays)) {
+      return;
+    }
+
+    await onPruneRunLogs(maxFiles, maxAgeDays);
+    setIsPruneDialogOpen(false);
+  };
+
   return (
     <>
       {!hasValidSpec ? (
@@ -171,6 +193,11 @@ export function RadiographyPanel({
                           <td className="px-2 py-1 align-top">{item.duration_ms}</td>
                           <td className="px-2 py-1 align-top">
                             {topReasonCodes.length > 0 ? topReasonCodes.join(", ") : "n/a"}
+                            {item.top_blockers && item.top_blockers.length > 0 ? (
+                              <div className="mt-1 text-[10px] text-zinc-500">
+                                blockers: {item.top_blockers.slice(0, 2).join(", ")}
+                              </div>
+                            ) : null}
                           </td>
                           <td className="px-2 py-1 align-top">
                             <div className="flex gap-2">
@@ -201,7 +228,79 @@ export function RadiographyPanel({
                 </tbody>
               </table>
             </div>
+
+            <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-950/40 p-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-zinc-300">RunLog Ops</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsPruneDialogOpen(true);
+                  }}
+                  className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500"
+                >
+                  {isRunLogPruneLoading ? "Pruning..." : "Prune Run Logs"}
+                </button>
+              </div>
+              {runLogOpsMessage ? (
+                <div className="mt-2 text-xs text-zinc-400">{runLogOpsMessage}</div>
+              ) : null}
+            </div>
           </div>
+
+          {isPruneDialogOpen ? (
+            <div className="mt-3 rounded-md border border-zinc-700 bg-zinc-900/80 p-3">
+              <div className="text-sm text-zinc-200">Confirm prune run logs</div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <label className="text-xs text-zinc-400">
+                  maxFiles
+                  <input
+                    type="number"
+                    min={1}
+                    max={2000}
+                    value={maxFilesInput}
+                    onChange={(event) => {
+                      setMaxFilesInput(event.target.value);
+                    }}
+                    className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
+                  />
+                </label>
+                <label className="text-xs text-zinc-400">
+                  maxAgeDays
+                  <input
+                    type="number"
+                    min={1}
+                    max={3650}
+                    value={maxAgeDaysInput}
+                    onChange={(event) => {
+                      setMaxAgeDaysInput(event.target.value);
+                    }}
+                    className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
+                  />
+                </label>
+              </div>
+              <div className="mt-3 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsPruneDialogOpen(false);
+                  }}
+                  className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleConfirmPrune();
+                  }}
+                  className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500"
+                >
+                  Confirm Prune
+                </button>
+              </div>
+            </div>
+          ) : null}
 
           {runLogWarning ? (
             <div className="mt-2 rounded-md border border-amber-700 bg-amber-950/30 px-2 py-1 text-xs text-amber-300">

@@ -1,7 +1,8 @@
 import type { BuildSpecV0, BuildSpecV0CapabilityId } from "@bax/buildspec";
 import type {
   RadiographyOutputV0,
-  RadiographyRunLogV0
+  RadiographyRunLogV0,
+  ReasonCodeV0
 } from "@bax/radiography-contract";
 
 export type Source = "local" | "example";
@@ -36,6 +37,7 @@ export type RunLogListItem = {
   reason_codes: string[];
   seed_urls_count: number;
   unique_hosts_count: number;
+  top_blockers?: ReasonCodeV0[];
 };
 
 export type LoadSpecSource = "default" | "example";

@@ -53,6 +53,7 @@ export const CORE_FIELDS_V0 = [
   "/buildspec/mode",
   "/buildspec/capabilities"
 ] as const;
+export const CORE_FIELDS_COUNT_V0 = CORE_FIELDS_V0.length;
 export type CoreFieldV0 = (typeof CORE_FIELDS_V0)[number];
 
 export const PUBLISH_BLOCKER_FIELDS_V0 = [
@@ -280,6 +281,16 @@ const RadiographyRunLogOutputsV0Schema = z
   })
   .strict();
 
+const RadiographyRunLogDebugV0Schema = z
+  .object({
+    core_fields_present: z.number().int().nonnegative(),
+    publish_blockers_present: z.number().int().nonnegative(),
+    top_missing_core_fields: z.array(JsonPointerV0Schema).max(10).optional(),
+    top_blockers: z.array(ReasonCodeV0Enum).max(10).optional()
+  })
+  .strict();
+export type RadiographyRunLogDebugV0 = z.infer<typeof RadiographyRunLogDebugV0Schema>;
+
 export const RadiographyRunLogV0Schema = z
   .object({
     runlog_version: z.literal(RADIOGRAPHY_RUNLOG_V0_VERSION),
@@ -289,6 +300,7 @@ export const RadiographyRunLogV0Schema = z
     inputs: RadiographyRunLogInputsV0Schema,
     buildspec: RadiographyRunLogBuildSpecV0Schema,
     outputs: RadiographyRunLogOutputsV0Schema,
+    debug: RadiographyRunLogDebugV0Schema.optional(),
     errors: z
       .array(
         z

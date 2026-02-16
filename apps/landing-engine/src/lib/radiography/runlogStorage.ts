@@ -1,5 +1,5 @@
 import "server-only";
-import { mkdir, readdir, readFile, stat, writeFile } from "fs/promises";
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from "fs/promises";
 import path from "path";
 import {
   RadiographyRunLogV0Schema,
@@ -9,6 +9,7 @@ import { detectLandingEngineRoot } from "@/lib/spec/buildspecStorage";
 
 const APP_ROOT = detectLandingEngineRoot();
 const RUNLOG_DIR = path.join(APP_ROOT, ".bax", "runlogs");
+const RESOLVED_RUNLOG_DIR = path.resolve(RUNLOG_DIR);
 
 export const RUNLOG_PATHS = {
   dir: RUNLOG_DIR
@@ -29,12 +30,79 @@ export type RunLogSummary = {
   reason_codes: string[];
   seed_urls_count: number;
   unique_hosts_count: number;
+  top_blockers?: string[];
 };
 
-const RUN_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+const RUN_ID_PATTERN = /^[a-zA-Z0-9_-]{6,80}$/;
+const FORBIDDEN_KEY_NAMES = new Set(["path", "seed_urls_raw"]);
+const FORBIDDEN_STRING_PATTERNS = [/\/Users\//, /\.bax\/runlogs\//, /https?:\/\//i];
 
 const ensureRunLogDir = async () => {
   await mkdir(RUNLOG_DIR, { recursive: true });
+};
+
+const runLogDirExists = async () => {
+  try {
+    const fileStat = await stat(RUNLOG_DIR);
+    return fileStat.isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+const isPathInsideRunLogDir = (filePath: string) => {
+  const resolvedFilePath = path.resolve(filePath);
+  return (
+    resolvedFilePath === RESOLVED_RUNLOG_DIR ||
+    resolvedFilePath.startsWith(`${RESOLVED_RUNLOG_DIR}${path.sep}`)
+  );
+};
+
+const hasForbiddenRunLogContent = (
+  value: unknown,
+  trail: string[] = []
+): boolean => {
+  if (typeof value === "string") {
+    return FORBIDDEN_STRING_PATTERNS.some((pattern) => pattern.test(value));
+  }
+
+  if (Array.isArray(value)) {
+    return value.some((item) => hasForbiddenRunLogContent(item, trail));
+  }
+
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  for (const [key, childValue] of Object.entries(record)) {
+    if (FORBIDDEN_KEY_NAMES.has(key)) {
+      return true;
+    }
+
+    if (trail.join(".") === "inputs.seed_urls" && key === "urls") {
+      return true;
+    }
+
+    if (hasForbiddenRunLogContent(childValue, [...trail, key])) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const parseStoredRunLog = (value: unknown): RadiographyRunLogV0 | null => {
+  if (hasForbiddenRunLogContent(value)) {
+    return null;
+  }
+
+  const parsed = RadiographyRunLogV0Schema.safeParse(value);
+  if (!parsed.success) {
+    return null;
+  }
+
+  return parsed.data;
 };
 
 const toRunLogSummary = (runlog: RadiographyRunLogV0): RunLogSummary => {
@@ -46,7 +114,8 @@ const toRunLogSummary = (runlog: RadiographyRunLogV0): RunLogSummary => {
     core_percent: runlog.outputs.gating_decision.core_percent,
     reason_codes: runlog.outputs.gating_decision.reason_codes,
     seed_urls_count: runlog.inputs.seed_urls.count,
-    unique_hosts_count: runlog.inputs.seed_urls.unique_hosts.length
+    unique_hosts_count: runlog.inputs.seed_urls.unique_hosts.length,
+    top_blockers: runlog.debug?.top_blockers
   };
 };
 
@@ -85,23 +154,21 @@ export const writeRunLog = async (runlog: RadiographyRunLogV0) => {
   return filePath;
 };
 
-const getLatestRunLogFile = async (): Promise<string | null> => {
-  const entries = await listRunLogFiles();
-  if (entries.length === 0) {
-    return null;
-  }
-  return entries[0]?.filePath ?? null;
-};
-
 export const readLatestRunLog = async (): Promise<RadiographyRunLogV0 | null> => {
-  const filePath = await getLatestRunLogFile();
-  if (!filePath) {
-    return null;
+  const entries = await listRunLogFiles();
+  for (const entry of entries) {
+    try {
+      const jsonText = await readFile(entry.filePath, "utf8");
+      const parsedJson = JSON.parse(jsonText) as unknown;
+      const runlog = parseStoredRunLog(parsedJson);
+      if (runlog) {
+        return runlog;
+      }
+    } catch {
+      // Skip invalid or unreadable files and continue searching.
+    }
   }
-
-  const jsonText = await readFile(filePath, "utf8");
-  const parsed = JSON.parse(jsonText) as unknown;
-  return RadiographyRunLogV0Schema.parse(parsed);
+  return null;
 };
 
 export const listRunLogs = async (limit: number): Promise<RunLogSummary[]> => {
@@ -121,17 +188,70 @@ export const listRunLogs = async (limit: number): Promise<RunLogSummary[]> => {
     try {
       const jsonText = await readFile(entry.filePath, "utf8");
       const parsed = JSON.parse(jsonText) as unknown;
-      const runlog = RadiographyRunLogV0Schema.safeParse(parsed);
-      if (!runlog.success) {
+      const runlog = parseStoredRunLog(parsed);
+      if (!runlog) {
         continue;
       }
-      items.push(toRunLogSummary(runlog.data));
+      items.push(toRunLogSummary(runlog));
     } catch {
       // Skip invalid or unreadable files; list endpoint should be resilient.
     }
   }
 
   return items;
+};
+
+export const pruneRunLogs = async (opts?: {
+  maxFiles?: number;
+  maxAgeDays?: number;
+}): Promise<{ deleted: number; kept: number; scanned: number }> => {
+  const maxFiles = opts?.maxFiles ?? 200;
+  const maxAgeDays = opts?.maxAgeDays ?? 14;
+
+  const exists = await runLogDirExists();
+  if (!exists) {
+    return { deleted: 0, kept: 0, scanned: 0 };
+  }
+
+  const entries = await listRunLogFiles();
+  const scanned = entries.length;
+  if (scanned === 0) {
+    return { deleted: 0, kept: 0, scanned: 0 };
+  }
+
+  const now = Date.now();
+  const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
+  const filePathsToDelete = new Set<string>();
+
+  for (const entry of entries) {
+    if (now - entry.mtimeMs > maxAgeMs) {
+      filePathsToDelete.add(entry.filePath);
+    }
+  }
+
+  for (const entry of entries.slice(maxFiles)) {
+    filePathsToDelete.add(entry.filePath);
+  }
+
+  let deleted = 0;
+  for (const filePath of filePathsToDelete) {
+    if (!isPathInsideRunLogDir(filePath)) {
+      continue;
+    }
+
+    try {
+      await unlink(filePath);
+      deleted += 1;
+    } catch {
+      // Ignore unlink errors and continue pruning the rest.
+    }
+  }
+
+  return {
+    deleted,
+    kept: Math.max(0, scanned - deleted),
+    scanned
+  };
 };
 
 type ReadRunLogByIdResult =
@@ -159,11 +279,11 @@ export const readRunLogById = async (run_id: string): Promise<ReadRunLogByIdResu
 
   try {
     const parsed = JSON.parse(jsonText) as unknown;
-    const runlog = RadiographyRunLogV0Schema.safeParse(parsed);
-    if (!runlog.success) {
+    const runlog = parseStoredRunLog(parsed);
+    if (!runlog) {
       return { ok: false, reason: "invalid" };
     }
-    return { ok: true, runlog: runlog.data };
+    return { ok: true, runlog };
   } catch {
     return { ok: false, reason: "invalid" };
   }
