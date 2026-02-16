@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type {
+  EvidenceBundleDraft,
   EvidenceIndex,
   RadiographyRunLog,
   RadiographyView,
@@ -18,6 +19,7 @@ type RadiographyPanelProps = {
   hasSeedUrls: boolean;
   canRunRadiography: boolean;
   radiographyView: RadiographyView | null;
+  selectedRunId: string | null;
   selectedRunLog: RadiographyRunLog | null;
   selectedRunEvidence: EvidenceIndex | null;
   selectedRunEvidenceError: string | null;
@@ -33,8 +35,19 @@ type RadiographyPanelProps = {
   isRunLogPruneLoading: boolean;
   isRunLogReplayLoading: boolean;
   isRunLogDiffLoading: boolean;
+  bundleExporting: boolean;
+  bundleImporting: boolean;
+  bundleImportError: string | null;
+  bundleImportOk: string | null;
+  bundleDraft: EvidenceBundleDraft | null;
+  bundleDraftError: string | null;
   runLogOpsMessage: string | null;
   onExportRadiography: () => void;
+  onExportEvidenceBundle: (runId: string) => Promise<void>;
+  onImportEvidenceBundle: (bundle: unknown) => Promise<{ run_id: string }>;
+  onSetBundleDraftFromText: (jsonText: string) => void;
+  onSetBundleDraftFromUnknown: (value: unknown) => void;
+  onClearBundleDraft: () => void;
   onOpenLatestRunLog: () => Promise<void>;
   onDownloadLatestRunLog: () => Promise<void>;
   onRefreshRunLogs: () => Promise<void>;
@@ -55,6 +68,7 @@ export function RadiographyPanel({
   hasSeedUrls,
   canRunRadiography,
   radiographyView,
+  selectedRunId,
   selectedRunLog,
   selectedRunEvidence,
   selectedRunEvidenceError,
@@ -70,8 +84,19 @@ export function RadiographyPanel({
   isRunLogPruneLoading,
   isRunLogReplayLoading,
   isRunLogDiffLoading,
+  bundleExporting,
+  bundleImporting,
+  bundleImportError,
+  bundleImportOk,
+  bundleDraft,
+  bundleDraftError,
   runLogOpsMessage,
   onExportRadiography,
+  onExportEvidenceBundle,
+  onImportEvidenceBundle,
+  onSetBundleDraftFromText,
+  onSetBundleDraftFromUnknown,
+  onClearBundleDraft,
   onOpenLatestRunLog,
   onDownloadLatestRunLog,
   onRefreshRunLogs,
@@ -90,6 +115,8 @@ export function RadiographyPanel({
   const [diffToRunId, setDiffToRunId] = useState("");
   const [maxFilesInput, setMaxFilesInput] = useState("200");
   const [maxAgeDaysInput, setMaxAgeDaysInput] = useState("14");
+  const [bundleText, setBundleText] = useState("");
+  const [bundleInputStatus, setBundleInputStatus] = useState<string | null>(null);
 
   const handleConfirmPrune = async () => {
     const maxFiles = Number.parseInt(maxFilesInput, 10);
@@ -126,6 +153,53 @@ export function RadiographyPanel({
       return "rounded bg-amber-950/50 px-1.5 py-0.5 text-amber-300";
     }
     return "rounded bg-zinc-800 px-1.5 py-0.5 text-zinc-300";
+  };
+
+  const MAX_BUNDLE_FILE_BYTES = 2 * 1024 * 1024;
+  const activeBundleRunId = selectedRunId ?? selectedRunEvidence?.run_id ?? selectedRunLog?.run_id ?? null;
+  const bundlePreviewItems = bundleDraft?.evidence_index.artifacts.slice(0, 10) ?? [];
+
+  const handleBundleTextChange = (value: string) => {
+    setBundleText(value);
+    onSetBundleDraftFromText(value);
+    setBundleInputStatus(null);
+  };
+
+  const handleBundleFileLoad = async (file: File) => {
+    if (file.size > MAX_BUNDLE_FILE_BYTES) {
+      setBundleInputStatus("File too large. Max supported file size is 2MB.");
+      onClearBundleDraft();
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      setBundleText(text);
+      try {
+        const parsed = JSON.parse(text) as unknown;
+        onSetBundleDraftFromUnknown(parsed);
+      } catch {
+        onSetBundleDraftFromText(text);
+      }
+      setBundleInputStatus(`Loaded file: ${file.name}`);
+    } catch {
+      setBundleInputStatus("Unable to read bundle file.");
+      onClearBundleDraft();
+    }
+  };
+
+  const handleBundleImport = async () => {
+    if (!bundleDraft || bundleImporting) {
+      return;
+    }
+
+    setBundleInputStatus(null);
+    try {
+      const result = await onImportEvidenceBundle(bundleDraft);
+      setBundleInputStatus(`Imported bundle for ${result.run_id}.`);
+    } catch {
+      // The hook already maps and stores safe error messages.
+    }
   };
 
   return (
@@ -659,6 +733,113 @@ export function RadiographyPanel({
               )}
             </div>
           ) : null}
+
+          <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/50 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-zinc-200">Evidence Bundle</div>
+              <button
+                type="button"
+                disabled={!activeBundleRunId || bundleExporting}
+                onClick={() => {
+                  if (!activeBundleRunId) {
+                    return;
+                  }
+                  void onExportEvidenceBundle(activeBundleRunId);
+                }}
+                className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {bundleExporting ? "Downloading..." : "Download Bundle"}
+              </button>
+            </div>
+            <div className="mt-1 text-xs text-zinc-500">
+              selected_run: {activeBundleRunId ?? "n/a"}
+            </div>
+
+            <div className="mt-3 grid gap-3">
+              <label className="text-xs text-zinc-400">
+                Upload bundle (.json, max 2MB)
+                <input
+                  type="file"
+                  accept="application/json,.json"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (!file) {
+                      return;
+                    }
+                    void handleBundleFileLoad(file);
+                    event.currentTarget.value = "";
+                  }}
+                  className="mt-1 block w-full text-xs text-zinc-300 file:mr-3 file:rounded-md file:border file:border-zinc-700 file:bg-zinc-950 file:px-2 file:py-1 file:text-zinc-200"
+                />
+              </label>
+
+              <label className="text-xs text-zinc-400">
+                Paste bundle JSON
+                <textarea
+                  value={bundleText}
+                  onChange={(event) => {
+                    handleBundleTextChange(event.target.value);
+                  }}
+                  className="mt-1 min-h-[130px] w-full rounded-md border border-zinc-700 bg-zinc-950 p-2 font-mono text-xs text-zinc-200"
+                />
+              </label>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={!bundleDraft || bundleImporting || Boolean(bundleDraftError)}
+                  onClick={() => {
+                    void handleBundleImport();
+                  }}
+                  className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {bundleImporting ? "Importing..." : "Import Bundle"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBundleText("");
+                    setBundleInputStatus(null);
+                    onClearBundleDraft();
+                  }}
+                  className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:border-zinc-500"
+                >
+                  Clear
+                </button>
+              </div>
+
+              {bundleDraft ? (
+                <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-2 text-xs text-zinc-300">
+                  <div>bundle_version: {bundleDraft.bundle_version}</div>
+                  <div>run_id: {bundleDraft.run_id}</div>
+                  <div>artifacts: {bundleDraft.evidence_index.artifacts.length}</div>
+                  <ul className="mt-2 list-disc pl-5 text-zinc-400">
+                    {bundlePreviewItems.map((artifact) => (
+                      <li key={artifact.id}>
+                        {artifact.id} ({artifact.kind}, {artifact.bytes} bytes)
+                      </li>
+                    ))}
+                    {bundleDraft.evidence_index.artifacts.length > bundlePreviewItems.length ? (
+                      <li>... {bundleDraft.evidence_index.artifacts.length - bundlePreviewItems.length} more</li>
+                    ) : null}
+                  </ul>
+                </div>
+              ) : null}
+
+              {bundleInputStatus ? (
+                <div className="text-xs text-zinc-400">{bundleInputStatus}</div>
+              ) : null}
+              {bundleDraftError ? (
+                <div className="text-xs text-amber-300">{bundleDraftError}</div>
+              ) : null}
+              {bundleImportError ? (
+                <div className="text-xs text-rose-300">{bundleImportError}</div>
+              ) : null}
+              {bundleImportOk ? (
+                <div className="text-xs text-emerald-300">{bundleImportOk}</div>
+              ) : null}
+            </div>
+          </div>
 
           {isLatestRunLogOpen ? (
             <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/50 p-3">

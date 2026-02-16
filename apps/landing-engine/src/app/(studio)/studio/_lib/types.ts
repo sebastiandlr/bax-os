@@ -43,6 +43,27 @@ export type EvidenceIndex = {
   artifacts: EvidenceArtifact[];
 };
 
+export type EvidenceBundleArtifact = {
+  id: string;
+  kind: string;
+  sha256: string;
+  bytes: number;
+  created_at: string;
+  content?: unknown;
+};
+
+export type EvidenceBundleDraft = {
+  bundle_version: string;
+  run_id: string;
+  created_at: string;
+  evidence_index: {
+    run_id: string;
+    created_at: string;
+    artifacts: EvidenceBundleArtifact[];
+  };
+  artifacts: EvidenceBundleArtifact[];
+};
+
 export type RunLogListItem = {
   run_id: string;
   created_at: string;
