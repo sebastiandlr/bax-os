@@ -111,6 +111,14 @@ const resetEvidenceDir = async () => {
   );
 };
 
+const assertNoLeakPatterns = (value: string) => {
+  assert.equal(value.includes("/Users/"), false);
+  assert.equal(value.includes("\\\\Users\\\\"), false);
+  assert.equal(value.includes(".bax/runlogs"), false);
+  assert.equal(value.includes("http://"), false);
+  assert.equal(value.includes("https://"), false);
+};
+
 test("runlogStorage.listRunLogs ignores invalid JSON and keeps deterministic order", async () => {
   await resetRunlogDir();
   await resetEvidenceDir();
@@ -641,4 +649,340 @@ test("evidence artifact endpoint rejects non-json artifact with artifact_not_jso
   const body = (await response.json()) as { ok?: boolean; error?: string };
   assert.equal(body.ok, false);
   assert.equal(body.error, "artifact_not_json");
+});
+
+test("evidence bundle export is deterministic and includes expected artifact ids without leaks", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const runlogRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/route.ts"
+  );
+  const bundleRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/evidence/[run_id]/bundle/route.ts");
+
+  const runId = "run-bundle1";
+  const postResponse = await runlogRoute.POST(
+    new Request("http://localhost/api/radiography/runlog", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runlog: createRunLogFixture({ run_id: runId }),
+        seed_urls_raw: ["https://example.com/path"]
+      })
+    })
+  );
+  assert.equal(postResponse.status, 200);
+
+  const responseA = await bundleRoute.GET(
+    new Request(`http://localhost/api/radiography/runlog/evidence/${runId}/bundle`),
+    { params: Promise.resolve({ run_id: runId }) }
+  );
+  assert.equal(responseA.status, 200);
+  assert.equal(
+    responseA.headers.get("content-type"),
+    "application/json; charset=utf-8"
+  );
+  assert.equal(
+    responseA.headers.get("content-disposition"),
+    `attachment; filename=\"radiography-evidence-${runId}.json\"`
+  );
+
+  const textA = await responseA.text();
+  const bundleA = JSON.parse(textA) as {
+    bundle_version: string;
+    run_id: string;
+    evidence_index: { artifacts: Array<{ id: string }> };
+    artifacts: Array<{ id: string }>;
+  };
+  assert.equal(bundleA.bundle_version, "0.1.0");
+  assert.equal(bundleA.run_id, runId);
+  assert.deepEqual(
+    bundleA.artifacts.map((artifact) => artifact.id),
+    bundleA.evidence_index.artifacts.map((artifact) => artifact.id)
+  );
+
+  const responseB = await bundleRoute.GET(
+    new Request(`http://localhost/api/radiography/runlog/evidence/${runId}/bundle`),
+    { params: Promise.resolve({ run_id: runId }) }
+  );
+  assert.equal(responseB.status, 200);
+  const textB = await responseB.text();
+  assert.equal(textA, textB);
+
+  assertNoLeakPatterns(textA);
+});
+
+test("evidence bundle export fails on integrity mismatch when artifact is tampered", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const runlogRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/route.ts"
+  );
+  const bundleRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/evidence/[run_id]/bundle/route.ts");
+
+  const runId = "run-bundle2";
+  const postResponse = await runlogRoute.POST(
+    new Request("http://localhost/api/radiography/runlog", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runlog: createRunLogFixture({ run_id: runId }),
+        seed_urls_raw: ["https://example.com/path"]
+      })
+    })
+  );
+  assert.equal(postResponse.status, 200);
+
+  const index = JSON.parse(
+    await readFile(path.join(evidenceDir, runId, "index.json"), "utf8")
+  ) as {
+    artifacts: Array<{ id: string }>;
+  };
+  const artifactId = index.artifacts[0]?.id;
+  assert.ok(artifactId);
+  await writeFile(path.join(evidenceDir, runId, `${artifactId}.json`), "{\"tampered\":true}\n", "utf8");
+
+  const response = await bundleRoute.GET(
+    new Request(`http://localhost/api/radiography/runlog/evidence/${runId}/bundle`),
+    { params: Promise.resolve({ run_id: runId }) }
+  );
+  assert.equal(response.status, 409);
+  const body = (await response.json()) as { ok?: boolean; error?: string; artifact_id?: string };
+  assert.equal(body.ok, false);
+  assert.equal(body.error, "integrity_mismatch");
+  assert.equal(body.artifact_id, artifactId);
+});
+
+test("evidence bundle import supports round-trip with index/artifact/bundle retrieval", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const runlogRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/route.ts"
+  );
+  const bundleRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/evidence/[run_id]/bundle/route.ts");
+  const importRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/evidence/import/route.ts"
+  );
+  const indexRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/evidence/[run_id]/route.ts");
+  const artifactRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string; artifact_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/evidence/[run_id]/artifact/[artifact_id]/route.ts");
+
+  const runId = "run-bundle3";
+  const postResponse = await runlogRoute.POST(
+    new Request("http://localhost/api/radiography/runlog", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runlog: createRunLogFixture({ run_id: runId }),
+        seed_urls_raw: ["https://example.com/path"]
+      })
+    })
+  );
+  assert.equal(postResponse.status, 200);
+
+  const exportedResponse = await bundleRoute.GET(
+    new Request(`http://localhost/api/radiography/runlog/evidence/${runId}/bundle`),
+    { params: Promise.resolve({ run_id: runId }) }
+  );
+  assert.equal(exportedResponse.status, 200);
+  const exportedText = await exportedResponse.text();
+  const exportedBundle = JSON.parse(exportedText) as {
+    run_id: string;
+    artifacts: Array<{ id: string }>;
+  };
+  assert.equal(exportedBundle.run_id, runId);
+
+  await resetEvidenceDir();
+
+  const importResponse = await importRoute.POST(
+    new Request("http://localhost/api/radiography/runlog/evidence/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bundle: exportedBundle })
+    })
+  );
+  assert.equal(importResponse.status, 200);
+  const importBody = (await importResponse.json()) as {
+    ok?: boolean;
+    run_id?: string;
+    imported?: { artifacts: number };
+  };
+  assert.equal(importBody.ok, true);
+  assert.equal(importBody.run_id, runId);
+  assert.equal(importBody.imported?.artifacts, exportedBundle.artifacts.length);
+  assertNoLeakPatterns(JSON.stringify(importBody));
+
+  const indexResponse = await indexRoute.GET(
+    new Request(`http://localhost/api/radiography/runlog/evidence/${runId}`),
+    { params: Promise.resolve({ run_id: runId }) }
+  );
+  assert.equal(indexResponse.status, 200);
+
+  const firstArtifactId = exportedBundle.artifacts[0]?.id;
+  assert.ok(firstArtifactId);
+
+  const artifactResponse = await artifactRoute.GET(
+    new Request(
+      `http://localhost/api/radiography/runlog/evidence/${runId}/artifact/${firstArtifactId}`
+    ),
+    { params: Promise.resolve({ run_id: runId, artifact_id: firstArtifactId }) }
+  );
+  assert.equal(artifactResponse.status, 200);
+  const artifactBodyText = JSON.stringify(await artifactResponse.json());
+  assertNoLeakPatterns(artifactBodyText);
+
+  const reExportResponse = await bundleRoute.GET(
+    new Request(`http://localhost/api/radiography/runlog/evidence/${runId}/bundle`),
+    { params: Promise.resolve({ run_id: runId }) }
+  );
+  assert.equal(reExportResponse.status, 200);
+  const reExportText = await reExportResponse.text();
+  assert.equal(reExportText, exportedText);
+});
+
+test("evidence bundle import rejects traversal, oversized payload, and non-json artifacts", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const importRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/evidence/import/route.ts"
+  );
+
+  const traversalResponse = await importRoute.POST(
+    new Request("http://localhost/api/radiography/runlog/evidence/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        bundle: {
+          bundle_version: "0.1.0",
+          run_id: "../escape",
+          created_at: "2026-02-16T00:00:00.000Z",
+          evidence_index: {
+            run_id: "../escape",
+            created_at: "2026-02-16T00:00:00.000Z",
+            artifacts: []
+          },
+          artifacts: []
+        }
+      })
+    })
+  );
+  assert.equal(traversalResponse.status, 400);
+  const traversalBody = (await traversalResponse.json()) as { ok?: boolean; error?: string };
+  assert.equal(traversalBody.ok, false);
+  assert.equal(traversalBody.error, "invalid");
+
+  const oversizedContent = { payload: "x".repeat(600_000) };
+  const oversizedText = `${JSON.stringify(oversizedContent, null, 2)}\n`;
+  const oversizedSha = createHash("sha256").update(oversizedText, "utf8").digest("hex");
+  const oversizedBytes = Buffer.byteLength(oversizedText, "utf8");
+  const oversizedArtifactId = "inputs_summary-oversized0";
+  const oversizedBundle = {
+    bundle_version: "0.1.0",
+    run_id: "runoversized1",
+    created_at: "2026-02-16T00:00:00.000Z",
+    evidence_index: {
+      run_id: "runoversized1",
+      created_at: "2026-02-16T00:00:00.000Z",
+      artifacts: [
+        {
+          id: oversizedArtifactId,
+          kind: "inputs_summary",
+          sha256: oversizedSha,
+          bytes: oversizedBytes,
+          created_at: "2026-02-16T00:00:00.000Z"
+        }
+      ]
+    },
+    artifacts: [
+      {
+        id: oversizedArtifactId,
+        kind: "inputs_summary",
+        sha256: oversizedSha,
+        bytes: oversizedBytes,
+        created_at: "2026-02-16T00:00:00.000Z",
+        content: oversizedContent
+      }
+    ]
+  };
+
+  const oversizedResponse = await importRoute.POST(
+    new Request("http://localhost/api/radiography/runlog/evidence/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bundle: oversizedBundle })
+    })
+  );
+  assert.equal(oversizedResponse.status, 413);
+  const oversizedBody = (await oversizedResponse.json()) as { ok?: boolean; error?: string };
+  assert.equal(oversizedBody.ok, false);
+  assert.equal(oversizedBody.error, "bundle_too_large");
+
+  const nonJsonArtifactId = "gating-nonjson0";
+  const nonJsonResponse = await importRoute.POST(
+    new Request("http://localhost/api/radiography/runlog/evidence/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        bundle: {
+          bundle_version: "0.1.0",
+          run_id: "runnonjson1",
+          created_at: "2026-02-16T00:00:00.000Z",
+          evidence_index: {
+            run_id: "runnonjson1",
+            created_at: "2026-02-16T00:00:00.000Z",
+            artifacts: [
+              {
+                id: nonJsonArtifactId,
+                kind: "gating",
+                sha256: "55fbec8f56f51d88f3f3a3fef1e57047f6f50f794f1846fcbfbe0e03ec2f1a6d",
+                bytes: 25,
+                created_at: "2026-02-16T00:00:00.000Z"
+              }
+            ]
+          },
+          artifacts: [
+            {
+              id: nonJsonArtifactId,
+              kind: "gating",
+              sha256: "55fbec8f56f51d88f3f3a3fef1e57047f6f50f794f1846fcbfbe0e03ec2f1a6d",
+              bytes: 25,
+              created_at: "2026-02-16T00:00:00.000Z",
+              content: "not-json-object"
+            }
+          ]
+        }
+      })
+    })
+  );
+  assert.equal(nonJsonResponse.status, 422);
+  const nonJsonBody = (await nonJsonResponse.json()) as { ok?: boolean; error?: string };
+  assert.equal(nonJsonBody.ok, false);
+  assert.equal(nonJsonBody.error, "artifact_not_json");
 });
