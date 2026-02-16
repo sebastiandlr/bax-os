@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "fs/promises";
 import path from "path";
 import type { BuildSpecV0 } from "@bax/buildspec";
 import { z } from "zod";
@@ -17,6 +17,12 @@ import { detectLandingEngineRoot } from "../spec/buildspecStorage";
 
 export const RUNLOG_RUN_ID_PATTERN = /^[a-zA-Z0-9_-]{6,80}$/;
 export const EVIDENCE_ARTIFACT_ID_PATTERN = /^[a-zA-Z0-9_-]{3,120}$/;
+export const EVIDENCE_BUNDLE_V0_VERSION = "0.1.0" as const;
+export const EVIDENCE_BUNDLE_LIMITS = {
+  maxArtifacts: 200,
+  maxTotalBytes: 5_000_000,
+  maxSingleArtifactBytes: 512_000
+} as const;
 export const FORBIDDEN_RUNLOG_KEY_NAMES = new Set(["path", "seed_urls_raw"]);
 const FORBIDDEN_RUNLOG_STRING_PATTERNS = [
   /\/Users\//,
@@ -274,6 +280,23 @@ const redactForbiddenArtifactContent = (value: unknown, trail: string[] = []): u
   return sanitized;
 };
 
+const sanitizeArtifactJsonContent = (value: unknown): Record<string, unknown> | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const sanitized = redactForbiddenArtifactContent(value);
+  if (!isRecord(sanitized)) {
+    return null;
+  }
+
+  if (hasForbiddenRunLogContent(sanitized)) {
+    return null;
+  }
+
+  return sanitized;
+};
+
 export const parseStoredRunLog = (value: unknown): RadiographyRunLogV0 | null => {
   if (hasForbiddenRunLogContent(value)) {
     return null;
@@ -412,6 +435,32 @@ export const EvidenceIndexV0Schema = z
     run_id: z.string().regex(RUNLOG_RUN_ID_PATTERN),
     created_at: z.string().datetime(),
     artifacts: z.array(EvidenceArtifactV0Schema)
+  })
+  .strict();
+
+export type EvidenceBundleArtifactV0 = EvidenceArtifactV0 & {
+  content: unknown;
+};
+
+export type EvidenceBundleV0 = {
+  bundle_version: typeof EVIDENCE_BUNDLE_V0_VERSION;
+  run_id: string;
+  created_at: string;
+  evidence_index: EvidenceIndexV0;
+  artifacts: EvidenceBundleArtifactV0[];
+};
+
+export const EvidenceBundleArtifactV0Schema = EvidenceArtifactV0Schema.extend({
+  content: z.unknown()
+}).strict();
+
+export const EvidenceBundleV0Schema = z
+  .object({
+    bundle_version: z.literal(EVIDENCE_BUNDLE_V0_VERSION),
+    run_id: z.string().regex(RUNLOG_RUN_ID_PATTERN),
+    created_at: z.string().datetime(),
+    evidence_index: EvidenceIndexV0Schema,
+    artifacts: z.array(EvidenceBundleArtifactV0Schema)
   })
   .strict();
 
@@ -876,12 +925,8 @@ export const readEvidenceArtifactById = async (
     return { ok: false, error: "artifact_not_json" };
   }
 
-  if (!isRecord(parsedContent)) {
-    return { ok: false, error: "artifact_not_json" };
-  }
-
-  const sanitizedContent = redactForbiddenArtifactContent(parsedContent);
-  if (!isRecord(sanitizedContent)) {
+  const sanitizedContent = sanitizeArtifactJsonContent(parsedContent);
+  if (!sanitizedContent) {
     return { ok: false, error: "artifact_not_json" };
   }
 
@@ -890,6 +935,297 @@ export const readEvidenceArtifactById = async (
     artifact: {
       ...metadata,
       content: sanitizedContent
+    }
+  };
+};
+
+type EvidenceBundleError =
+  | "invalid"
+  | "not_found"
+  | "integrity_mismatch"
+  | "artifact_not_json"
+  | "bundle_too_large"
+  | "already_exists";
+
+type EvidenceBundleFailure = {
+  ok: false;
+  error: EvidenceBundleError;
+  artifact_id?: string;
+};
+
+type EvidenceBundleSuccess = {
+  ok: true;
+  bundle: EvidenceBundleV0;
+};
+
+type BundleDraftArtifact = {
+  metadata: EvidenceArtifactV0;
+  contentText: string;
+};
+
+const validateBundleCaps = (
+  artifacts: Array<Pick<EvidenceArtifactV0, "bytes">>
+): { ok: true } | EvidenceBundleFailure => {
+  if (artifacts.length > EVIDENCE_BUNDLE_LIMITS.maxArtifacts) {
+    return { ok: false, error: "bundle_too_large" };
+  }
+
+  let totalBytes = 0;
+  for (const artifact of artifacts) {
+    if (artifact.bytes > EVIDENCE_BUNDLE_LIMITS.maxSingleArtifactBytes) {
+      return { ok: false, error: "bundle_too_large" };
+    }
+    totalBytes += artifact.bytes;
+    if (totalBytes > EVIDENCE_BUNDLE_LIMITS.maxTotalBytes) {
+      return { ok: false, error: "bundle_too_large" };
+    }
+  }
+
+  return { ok: true };
+};
+
+const assertArtifactIdsUnique = (
+  artifacts: Array<Pick<EvidenceArtifactV0, "id">>
+): { ok: true } | EvidenceBundleFailure => {
+  const seen = new Set<string>();
+  for (const artifact of artifacts) {
+    if (seen.has(artifact.id)) {
+      return { ok: false, error: "invalid", artifact_id: artifact.id };
+    }
+    seen.add(artifact.id);
+  }
+  return { ok: true };
+};
+
+const buildBundleDraftArtifacts = (
+  bundle: EvidenceBundleV0
+): { ok: true; drafts: BundleDraftArtifact[] } | EvidenceBundleFailure => {
+  if (
+    bundle.evidence_index.run_id !== bundle.run_id ||
+    bundle.evidence_index.created_at !== bundle.created_at
+  ) {
+    return { ok: false, error: "invalid" };
+  }
+
+  if (bundle.evidence_index.artifacts.length !== bundle.artifacts.length) {
+    return { ok: false, error: "invalid" };
+  }
+
+  const capsResult = validateBundleCaps(bundle.evidence_index.artifacts);
+  if (!capsResult.ok) {
+    return capsResult;
+  }
+
+  const uniqueIndexResult = assertArtifactIdsUnique(bundle.evidence_index.artifacts);
+  if (!uniqueIndexResult.ok) {
+    return uniqueIndexResult;
+  }
+  const uniqueArtifactResult = assertArtifactIdsUnique(bundle.artifacts);
+  if (!uniqueArtifactResult.ok) {
+    return uniqueArtifactResult;
+  }
+
+  const artifactById = new Map(bundle.artifacts.map((artifact) => [artifact.id, artifact]));
+  const drafts: BundleDraftArtifact[] = [];
+
+  for (const indexArtifact of bundle.evidence_index.artifacts) {
+    const bundleArtifact = artifactById.get(indexArtifact.id);
+    if (!bundleArtifact) {
+      return { ok: false, error: "invalid", artifact_id: indexArtifact.id };
+    }
+
+    if (!EVIDENCE_ARTIFACT_ID_PATTERN.test(indexArtifact.id)) {
+      return { ok: false, error: "invalid", artifact_id: indexArtifact.id };
+    }
+
+    if (!indexArtifact.id.startsWith(`${indexArtifact.kind}-`)) {
+      return { ok: false, error: "integrity_mismatch", artifact_id: indexArtifact.id };
+    }
+
+    if (
+      bundleArtifact.id !== indexArtifact.id ||
+      bundleArtifact.kind !== indexArtifact.kind ||
+      bundleArtifact.sha256 !== indexArtifact.sha256 ||
+      bundleArtifact.bytes !== indexArtifact.bytes ||
+      bundleArtifact.created_at !== indexArtifact.created_at
+    ) {
+      return { ok: false, error: "integrity_mismatch", artifact_id: indexArtifact.id };
+    }
+
+    const sanitizedContent = sanitizeArtifactJsonContent(bundleArtifact.content);
+    if (!sanitizedContent) {
+      return { ok: false, error: "artifact_not_json", artifact_id: indexArtifact.id };
+    }
+
+    const contentText = toPrettyJson(sanitizedContent);
+    const computedSha = sha256Hex(contentText);
+    const computedBytes = Buffer.byteLength(contentText, "utf8");
+
+    if (
+      computedSha !== indexArtifact.sha256 ||
+      computedBytes !== indexArtifact.bytes ||
+      computedSha !== bundleArtifact.sha256 ||
+      computedBytes !== bundleArtifact.bytes
+    ) {
+      return { ok: false, error: "integrity_mismatch", artifact_id: indexArtifact.id };
+    }
+
+    drafts.push({
+      metadata: indexArtifact,
+      contentText
+    });
+  }
+
+  const totalBytes = drafts.reduce((total, draft) => total + draft.metadata.bytes, 0);
+  if (totalBytes > EVIDENCE_BUNDLE_LIMITS.maxTotalBytes) {
+    return { ok: false, error: "bundle_too_large" };
+  }
+
+  return { ok: true, drafts };
+};
+
+export const readEvidenceBundleByRunId = async (
+  run_id: string
+): Promise<EvidenceBundleSuccess | EvidenceBundleFailure> => {
+  if (!RUNLOG_RUN_ID_PATTERN.test(run_id)) {
+    return { ok: false, error: "invalid" };
+  }
+
+  const indexResult = await readEvidenceIndexByRunId(run_id);
+  if (!indexResult.ok) {
+    return {
+      ok: false,
+      error: indexResult.reason === "not_found" ? "not_found" : "invalid"
+    };
+  }
+
+  const capsResult = validateBundleCaps(indexResult.evidence_index.artifacts);
+  if (!capsResult.ok) {
+    return capsResult;
+  }
+
+  const uniqueResult = assertArtifactIdsUnique(indexResult.evidence_index.artifacts);
+  if (!uniqueResult.ok) {
+    return uniqueResult;
+  }
+
+  const artifacts: EvidenceBundleArtifactV0[] = [];
+
+  for (const artifactMetadata of indexResult.evidence_index.artifacts) {
+    const artifactResult = await readEvidenceArtifactById(run_id, artifactMetadata.id);
+    if (!artifactResult.ok) {
+      if (artifactResult.error === "artifact_not_json") {
+        return {
+          ok: false,
+          error: "artifact_not_json",
+          artifact_id: artifactMetadata.id
+        };
+      }
+
+      return {
+        ok: false,
+        error:
+          artifactResult.error === "invalid" ? "invalid" : "integrity_mismatch",
+        artifact_id: artifactMetadata.id
+      };
+    }
+
+    if (
+      artifactResult.artifact.id !== artifactMetadata.id ||
+      artifactResult.artifact.kind !== artifactMetadata.kind ||
+      artifactResult.artifact.sha256 !== artifactMetadata.sha256 ||
+      artifactResult.artifact.bytes !== artifactMetadata.bytes ||
+      artifactResult.artifact.created_at !== artifactMetadata.created_at
+    ) {
+      return { ok: false, error: "integrity_mismatch", artifact_id: artifactMetadata.id };
+    }
+
+    artifacts.push(artifactResult.artifact);
+  }
+
+  const bundle: EvidenceBundleV0 = {
+    bundle_version: EVIDENCE_BUNDLE_V0_VERSION,
+    run_id: indexResult.evidence_index.run_id,
+    created_at: indexResult.evidence_index.created_at,
+    evidence_index: indexResult.evidence_index,
+    artifacts
+  };
+
+  const parsedBundle = EvidenceBundleV0Schema.safeParse(bundle);
+  if (!parsedBundle.success) {
+    return { ok: false, error: "invalid" };
+  }
+
+  return { ok: true, bundle: parsedBundle.data };
+};
+
+export const importEvidenceBundle = async (
+  input: unknown
+): Promise<
+  | {
+      ok: true;
+      run_id: string;
+      imported: {
+        artifacts: number;
+      };
+    }
+  | EvidenceBundleFailure
+> => {
+  const parsedBundle = EvidenceBundleV0Schema.safeParse(input);
+  if (!parsedBundle.success) {
+    return { ok: false, error: "invalid" };
+  }
+
+  const bundle = parsedBundle.data;
+  const draftResult = buildBundleDraftArtifacts(bundle);
+  if (!draftResult.ok) {
+    return draftResult;
+  }
+
+  await ensureEvidenceDir();
+  const evidenceRunDir = getEvidenceDirForRun(bundle.run_id);
+  let existingEntries: string[] = [];
+  try {
+    existingEntries = await readdir(evidenceRunDir);
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code !== "ENOENT") {
+      return { ok: false, error: "invalid" };
+    }
+  }
+
+  if (existingEntries.length > 0) {
+    return { ok: false, error: "already_exists" };
+  }
+
+  await mkdir(evidenceRunDir, { recursive: true });
+
+  for (const draft of draftResult.drafts) {
+    const artifactPath = path.join(evidenceRunDir, `${draft.metadata.id}.json`);
+    if (!isPathInsideDir(evidenceRunDir, artifactPath)) {
+      return { ok: false, error: "invalid", artifact_id: draft.metadata.id };
+    }
+    await writeFile(artifactPath, draft.contentText, "utf8");
+  }
+
+  const indexPath = path.join(evidenceRunDir, "index.json");
+  if (!isPathInsideDir(evidenceRunDir, indexPath)) {
+    return { ok: false, error: "invalid" };
+  }
+
+  const evidenceIndex: EvidenceIndexV0 = {
+    run_id: bundle.run_id,
+    created_at: bundle.created_at,
+    artifacts: draftResult.drafts.map((draft) => draft.metadata)
+  };
+
+  await writeFile(indexPath, toPrettyJson(evidenceIndex), "utf8");
+
+  return {
+    ok: true,
+    run_id: bundle.run_id,
+    imported: {
+      artifacts: draftResult.drafts.length
     }
   };
 };

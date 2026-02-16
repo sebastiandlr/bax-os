@@ -10,7 +10,9 @@
     "test:runlog": "node --import tsx --test tests/runlog/runlog.golden.test.ts",
     "radiography:diff": "node scripts/radiography/diff.mjs",
     "radiography:evidence": "node scripts/radiography/evidence.mjs",
-    "radiography:evidence:artifact": "node scripts/radiography/evidence-artifact.mjs"
+    "radiography:evidence:artifact": "node scripts/radiography/evidence-artifact.mjs",
+    "radiography:evidence:bundle": "node scripts/radiography/evidence-bundle.mjs export",
+    "radiography:evidence:import": "node scripts/radiography/evidence-bundle.mjs import"
   },
   "dependencies": {
     "@bax/buildspec": "file:../../packages/buildspec",
