@@ -1416,6 +1416,8 @@ test("evidence replay returns leak-safe contract_violation details on internal s
     safeParse: (...args: unknown[]) => unknown;
   };
   const originalSafeParse = schemaMutable.safeParse;
+  const originalConsoleError = console.error;
+  const loggedErrors: unknown[][] = [];
   schemaMutable.safeParse = () => ({
     success: false,
     error: {
@@ -1428,6 +1430,9 @@ test("evidence replay returns leak-safe contract_violation details on internal s
       ]
     }
   });
+  console.error = (...args: unknown[]) => {
+    loggedErrors.push(args);
+  };
 
   try {
     const replayResponse = await replayRoute.POST(
@@ -1441,6 +1446,7 @@ test("evidence replay returns leak-safe contract_violation details on internal s
     const replayBody = (await replayResponse.json()) as {
       ok?: boolean;
       error?: string;
+      request_id?: string;
       details?: {
         code?: string;
         issues_count?: number;
@@ -1449,6 +1455,7 @@ test("evidence replay returns leak-safe contract_violation details on internal s
     };
     assert.equal(replayBody.ok, false);
     assert.equal(replayBody.error, "internal_error");
+    assert.match(replayBody.request_id ?? "", /^[A-Za-z0-9_-]{1,80}$/);
     assert.equal(replayBody.details?.code, "contract_violation");
     assert.equal(replayBody.details?.issues_count, 5);
     assert.deepEqual(replayBody.details?.issues_paths, ["compare", "replay", "root"]);
@@ -1458,8 +1465,28 @@ test("evidence replay returns leak-safe contract_violation details on internal s
       ),
       true
     );
+
+    assert.equal(loggedErrors.length, 1);
+    assert.equal(loggedErrors[0]?.[0], "radiography_replay_error");
+    const logPayload = loggedErrors[0]?.[1] as {
+      request_id?: string;
+      status?: number;
+      error?: string;
+      code?: string;
+      issues_count?: number;
+      issues_paths?: string[];
+    };
+    assert.equal(logPayload.status, 500);
+    assert.equal(logPayload.error, "internal_error");
+    assert.equal(logPayload.code, "contract_violation");
+    assert.equal(logPayload.issues_count, 5);
+    assert.deepEqual(logPayload.issues_paths, ["compare", "replay", "root"]);
+    assert.equal(logPayload.request_id, replayBody.request_id);
+
     assertNoLeakPatterns(JSON.stringify(replayBody));
+    assertNoLeakPatterns(JSON.stringify(logPayload));
   } finally {
+    console.error = originalConsoleError;
     schemaMutable.safeParse = originalSafeParse;
   }
 });

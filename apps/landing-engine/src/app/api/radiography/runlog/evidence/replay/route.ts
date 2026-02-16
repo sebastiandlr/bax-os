@@ -9,6 +9,9 @@ import {
 } from "@/lib/radiography/runlogUtils";
 
 export const runtime = "nodejs";
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
+const REQUEST_ID_FALLBACK_SANITIZE_PATTERN = /[^a-z0-9-]/g;
+const ALLOWED_ISSUES_PATH_KEYS = new Set(["replay", "compare", "persisted"]);
 
 const ReplayOptionsSchema = z
   .object({
@@ -35,7 +38,6 @@ const formatIssues = (issues: { path: PropertyKey[]; message: string }[]) => {
 
 const buildContractViolationDetails = (issues: z.ZodIssue[]) => {
   const topLevelPaths = new Set<string>();
-  const allowedTopLevelKeys = new Set(["replay", "compare", "persisted"]);
 
   for (const issue of issues) {
     if (issue.path.length === 0) {
@@ -44,7 +46,7 @@ const buildContractViolationDetails = (issues: z.ZodIssue[]) => {
     }
 
     const firstSegment = issue.path[0];
-    if (typeof firstSegment === "string" && allowedTopLevelKeys.has(firstSegment)) {
+    if (typeof firstSegment === "string" && ALLOWED_ISSUES_PATH_KEYS.has(firstSegment)) {
       topLevelPaths.add(firstSegment);
       continue;
     }
@@ -59,7 +61,89 @@ const buildContractViolationDetails = (issues: z.ZodIssue[]) => {
   };
 };
 
+const normalizeRequestId = (value: string | null): string | null => {
+  if (!value) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!REQUEST_ID_PATTERN.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
+};
+
+const buildFallbackRequestId = () => {
+  const fallbackId = `${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 10)}`
+    .toLowerCase()
+    .replace(REQUEST_ID_FALLBACK_SANITIZE_PATTERN, "")
+    .slice(0, 80);
+
+  return fallbackId.length > 0 ? fallbackId : "req";
+};
+
+const getRequestId = (request: Request) => {
+  const incomingRequestId = normalizeRequestId(request.headers.get("x-request-id"));
+  if (incomingRequestId) {
+    return incomingRequestId;
+  }
+
+  const generatedRequestId =
+    typeof globalThis.crypto?.randomUUID === "function" ? globalThis.crypto.randomUUID() : null;
+  const normalizedGeneratedRequestId = normalizeRequestId(generatedRequestId);
+  if (normalizedGeneratedRequestId) {
+    return normalizedGeneratedRequestId;
+  }
+
+  return buildFallbackRequestId();
+};
+
+const buildInternalErrorResponse = (params: {
+  request_id: string;
+  code: "contract_violation" | "internal_error";
+  contractViolationDetails?: ReturnType<typeof buildContractViolationDetails>;
+}) => {
+  const details =
+    params.code === "contract_violation" && params.contractViolationDetails
+      ? params.contractViolationDetails
+      : { code: "internal_error" as const };
+
+  const logPayload =
+    params.code === "contract_violation" && params.contractViolationDetails
+      ? {
+          request_id: params.request_id,
+          status: 500 as const,
+          error: "internal_error" as const,
+          code: "contract_violation" as const,
+          issues_count: params.contractViolationDetails.issues_count,
+          issues_paths: params.contractViolationDetails.issues_paths
+        }
+      : {
+          request_id: params.request_id,
+          status: 500 as const,
+          error: "internal_error" as const,
+          code: "internal_error" as const
+        };
+
+  console.error("radiography_replay_error", logPayload);
+
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "internal_error",
+      request_id: params.request_id,
+      details
+    },
+    { status: 500 }
+  );
+};
+
 export async function POST(request: Request) {
+  const request_id = getRequestId(request);
+
+  try {
   let body: unknown;
   try {
     body = await request.json();
@@ -153,19 +237,18 @@ export async function POST(request: Request) {
   const parsedSuccessPayload = EvidenceReplayResponseV0Schema.safeParse(successPayload);
   if (!parsedSuccessPayload.success) {
     const details = buildContractViolationDetails(parsedSuccessPayload.error.issues);
-    console.error("radiography_replay_contract_violation", {
-      issues_count: details.issues_count,
-      issues_paths: details.issues_paths
+    return buildInternalErrorResponse({
+      request_id,
+      code: "contract_violation",
+      contractViolationDetails: details
     });
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "internal_error",
-        details
-      },
-      { status: 500 }
-    );
   }
 
   return NextResponse.json(parsedSuccessPayload.data);
+  } catch {
+    return buildInternalErrorResponse({
+      request_id,
+      code: "internal_error"
+    });
+  }
 }
