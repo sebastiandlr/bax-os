@@ -780,6 +780,15 @@ test("evidence bundle import supports round-trip with index/artifact/bundle retr
   const importRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
     "src/app/api/radiography/runlog/evidence/import/route.ts"
   );
+  const runlogListRoute = await importFresh<{
+    GET: (request: Request) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/route.ts");
+  const runlogByIdRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/[run_id]/route.ts");
   const indexRoute = await importFresh<{
     GET: (
       request: Request,
@@ -814,11 +823,21 @@ test("evidence bundle import supports round-trip with index/artifact/bundle retr
   const exportedText = await exportedResponse.text();
   const exportedBundle = JSON.parse(exportedText) as {
     run_id: string;
+    created_at: string;
+    evidence_index: {
+      run_id: string;
+      created_at: string;
+      artifacts: Array<{ id: string }>;
+    };
     artifacts: Array<{ id: string }>;
   };
   assert.equal(exportedBundle.run_id, runId);
 
   await resetEvidenceDir();
+
+  const importedRunId = "run-bundle3-import";
+  exportedBundle.run_id = importedRunId;
+  exportedBundle.evidence_index.run_id = importedRunId;
 
   const importResponse = await importRoute.POST(
     new Request("http://localhost/api/radiography/runlog/evidence/import", {
@@ -830,17 +849,69 @@ test("evidence bundle import supports round-trip with index/artifact/bundle retr
   assert.equal(importResponse.status, 200);
   const importBody = (await importResponse.json()) as {
     ok?: boolean;
+    error?: string;
     run_id?: string;
     imported?: { artifacts: number };
   };
   assert.equal(importBody.ok, true);
-  assert.equal(importBody.run_id, runId);
+  assert.equal(importBody.run_id, importedRunId);
   assert.equal(importBody.imported?.artifacts, exportedBundle.artifacts.length);
   assertNoLeakPatterns(JSON.stringify(importBody));
 
+  const listResponse = await runlogListRoute.GET(
+    new Request("http://localhost/api/radiography/runlog?limit=20")
+  );
+  assert.equal(listResponse.status, 200);
+  const listBody = (await listResponse.json()) as {
+    ok?: boolean;
+    items?: Array<{
+      run_id: string;
+      source?: string;
+      is_stub?: boolean;
+    }>;
+  };
+  assert.equal(listBody.ok, true);
+  assert.ok(Array.isArray(listBody.items));
+  const importedSummary = listBody.items?.find((item) => item.run_id === importedRunId);
+  assert.ok(importedSummary);
+  assert.equal(importedSummary?.source, "imported_bundle");
+  assert.equal(importedSummary?.is_stub, true);
+  assertNoLeakPatterns(JSON.stringify(listBody));
+
+  const byIdResponse = await runlogByIdRoute.GET(
+    new Request(`http://localhost/api/radiography/runlog/${importedRunId}`),
+    { params: Promise.resolve({ run_id: importedRunId }) }
+  );
+  assert.equal(byIdResponse.status, 200);
+  const byIdBody = (await byIdResponse.json()) as {
+    ok?: boolean;
+    runlog?: {
+      run_id: string;
+      source?: string;
+      is_stub?: boolean;
+      imported_from?: { bundle_version: string };
+      outputs: {
+        gating_decision: {
+          status: string;
+          core_percent: number;
+          reason_codes: string[];
+        };
+      };
+    };
+  };
+  assert.equal(byIdBody.ok, true);
+  assert.equal(byIdBody.runlog?.run_id, importedRunId);
+  assert.equal(byIdBody.runlog?.source, "imported_bundle");
+  assert.equal(byIdBody.runlog?.is_stub, true);
+  assert.equal(byIdBody.runlog?.imported_from?.bundle_version, "0.1.0");
+  assert.equal(byIdBody.runlog?.outputs.gating_decision.status, "soft_fail");
+  assert.equal(byIdBody.runlog?.outputs.gating_decision.core_percent, 50);
+  assert.deepEqual(byIdBody.runlog?.outputs.gating_decision.reason_codes, ["needs_manual_verify"]);
+  assertNoLeakPatterns(JSON.stringify(byIdBody));
+
   const indexResponse = await indexRoute.GET(
-    new Request(`http://localhost/api/radiography/runlog/evidence/${runId}`),
-    { params: Promise.resolve({ run_id: runId }) }
+    new Request(`http://localhost/api/radiography/runlog/evidence/${importedRunId}`),
+    { params: Promise.resolve({ run_id: importedRunId }) }
   );
   assert.equal(indexResponse.status, 200);
 
@@ -849,21 +920,238 @@ test("evidence bundle import supports round-trip with index/artifact/bundle retr
 
   const artifactResponse = await artifactRoute.GET(
     new Request(
-      `http://localhost/api/radiography/runlog/evidence/${runId}/artifact/${firstArtifactId}`
+      `http://localhost/api/radiography/runlog/evidence/${importedRunId}/artifact/${firstArtifactId}`
     ),
-    { params: Promise.resolve({ run_id: runId, artifact_id: firstArtifactId }) }
+    { params: Promise.resolve({ run_id: importedRunId, artifact_id: firstArtifactId }) }
   );
   assert.equal(artifactResponse.status, 200);
   const artifactBodyText = JSON.stringify(await artifactResponse.json());
   assertNoLeakPatterns(artifactBodyText);
 
   const reExportResponse = await bundleRoute.GET(
-    new Request(`http://localhost/api/radiography/runlog/evidence/${runId}/bundle`),
-    { params: Promise.resolve({ run_id: runId }) }
+    new Request(`http://localhost/api/radiography/runlog/evidence/${importedRunId}/bundle`),
+    { params: Promise.resolve({ run_id: importedRunId }) }
   );
   assert.equal(reExportResponse.status, 200);
   const reExportText = await reExportResponse.text();
-  assert.equal(reExportText, exportedText);
+  const expectedReExportText = `${JSON.stringify(exportedBundle, null, 2)}\n`;
+  assert.equal(reExportText, expectedReExportText);
+});
+
+test("evidence bundle import returns 409 when run_id already exists (full runlog or stub)", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const runlogRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/route.ts"
+  );
+  const bundleRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/evidence/[run_id]/bundle/route.ts");
+  const importRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/evidence/import/route.ts"
+  );
+
+  const fullRunId = "run-collision-full";
+  const fullPost = await runlogRoute.POST(
+    new Request("http://localhost/api/radiography/runlog", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runlog: createRunLogFixture({ run_id: fullRunId }),
+        seed_urls_raw: ["https://example.com/full"]
+      })
+    })
+  );
+  assert.equal(fullPost.status, 200);
+
+  const fullBundleResponse = await bundleRoute.GET(
+    new Request(`http://localhost/api/radiography/runlog/evidence/${fullRunId}/bundle`),
+    { params: Promise.resolve({ run_id: fullRunId }) }
+  );
+  assert.equal(fullBundleResponse.status, 200);
+  const fullBundle = JSON.parse(await fullBundleResponse.text()) as unknown;
+
+  const fullImportResponse = await importRoute.POST(
+    new Request("http://localhost/api/radiography/runlog/evidence/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bundle: fullBundle })
+    })
+  );
+  assert.equal(fullImportResponse.status, 409);
+  const fullImportBody = (await fullImportResponse.json()) as {
+    ok?: boolean;
+    error?: string;
+  };
+  assert.equal(fullImportBody.ok, false);
+  assert.equal(fullImportBody.error, "run_already_exists");
+
+  const sourceRunId = "run-collision-source";
+  const sourcePost = await runlogRoute.POST(
+    new Request("http://localhost/api/radiography/runlog", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runlog: createRunLogFixture({ run_id: sourceRunId }),
+        seed_urls_raw: ["https://example.com/source"]
+      })
+    })
+  );
+  assert.equal(sourcePost.status, 200);
+
+  const sourceBundleResponse = await bundleRoute.GET(
+    new Request(`http://localhost/api/radiography/runlog/evidence/${sourceRunId}/bundle`),
+    { params: Promise.resolve({ run_id: sourceRunId }) }
+  );
+  assert.equal(sourceBundleResponse.status, 200);
+  const sourceBundle = JSON.parse(await sourceBundleResponse.text()) as {
+    run_id: string;
+    evidence_index: {
+      run_id: string;
+    };
+  };
+
+  const stubRunId = "run-collision-stub";
+  sourceBundle.run_id = stubRunId;
+  sourceBundle.evidence_index.run_id = stubRunId;
+
+  await resetEvidenceDir();
+
+  const firstStubImportResponse = await importRoute.POST(
+    new Request("http://localhost/api/radiography/runlog/evidence/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bundle: sourceBundle })
+    })
+  );
+  assert.equal(firstStubImportResponse.status, 200);
+
+  const secondStubImportResponse = await importRoute.POST(
+    new Request("http://localhost/api/radiography/runlog/evidence/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bundle: sourceBundle })
+    })
+  );
+  assert.equal(secondStubImportResponse.status, 409);
+  const secondStubBody = (await secondStubImportResponse.json()) as {
+    ok?: boolean;
+    error?: string;
+  };
+  assert.equal(secondStubBody.ok, false);
+  assert.equal(secondStubBody.error, "run_already_exists");
+});
+
+test("imported runlog stub defaults gating when gating artifact is missing", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const importRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/evidence/import/route.ts"
+  );
+  const runlogByIdRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/[run_id]/route.ts");
+  const runlogListRoute = await importFresh<{
+    GET: (request: Request) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/route.ts");
+
+  const runId = "run-stub-default";
+  const artifactId = "inputs_summary-d1f09a1b";
+  const content = {
+    business_name: "IMPORTED_BUNDLE",
+    city: "UNKNOWN",
+    country: "UNKNOWN",
+    language: "es",
+    mode_hint: "lead",
+    seed_urls: {
+      count: 0,
+      unique_hosts: [],
+      url_hashes: []
+    }
+  };
+  const contentText = `${JSON.stringify(content, null, 2)}\n`;
+  const sha = createHash("sha256").update(contentText, "utf8").digest("hex");
+  const bytes = Buffer.byteLength(contentText, "utf8");
+
+  const bundle = {
+    bundle_version: "0.1.0",
+    run_id: runId,
+    created_at: "2026-02-16T00:00:00.000Z",
+    evidence_index: {
+      run_id: runId,
+      created_at: "2026-02-16T00:00:00.000Z",
+      artifacts: [
+        {
+          id: artifactId,
+          kind: "inputs_summary",
+          sha256: sha,
+          bytes,
+          created_at: "2026-02-16T00:00:00.000Z"
+        }
+      ]
+    },
+    artifacts: [
+      {
+        id: artifactId,
+        kind: "inputs_summary",
+        sha256: sha,
+        bytes,
+        created_at: "2026-02-16T00:00:00.000Z",
+        content
+      }
+    ]
+  };
+
+  const importResponse = await importRoute.POST(
+    new Request("http://localhost/api/radiography/runlog/evidence/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bundle })
+    })
+  );
+  assert.equal(importResponse.status, 200);
+
+  const byIdResponse = await runlogByIdRoute.GET(
+    new Request(`http://localhost/api/radiography/runlog/${runId}`),
+    { params: Promise.resolve({ run_id: runId }) }
+  );
+  assert.equal(byIdResponse.status, 200);
+  const byIdBody = (await byIdResponse.json()) as {
+    ok?: boolean;
+    runlog?: {
+      source?: string;
+      is_stub?: boolean;
+      outputs: {
+        gating_decision: {
+          status: string;
+          core_percent: number;
+          reason_codes: string[];
+        };
+      };
+    };
+  };
+  assert.equal(byIdBody.ok, true);
+  assert.equal(byIdBody.runlog?.source, "imported_bundle");
+  assert.equal(byIdBody.runlog?.is_stub, true);
+  assert.equal(byIdBody.runlog?.outputs.gating_decision.status, "hard_fail");
+  assert.equal(byIdBody.runlog?.outputs.gating_decision.core_percent, 0);
+  assert.deepEqual(byIdBody.runlog?.outputs.gating_decision.reason_codes, []);
+  assertNoLeakPatterns(JSON.stringify(byIdBody));
+
+  const listResponse = await runlogListRoute.GET(
+    new Request("http://localhost/api/radiography/runlog?limit=20")
+  );
+  assert.equal(listResponse.status, 200);
+  const listBodyText = JSON.stringify(await listResponse.json());
+  assertNoLeakPatterns(listBodyText);
 });
 
 test("evidence bundle import rejects traversal, oversized payload, and non-json artifacts", async () => {
