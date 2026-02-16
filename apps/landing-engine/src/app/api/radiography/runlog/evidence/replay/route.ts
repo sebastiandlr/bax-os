@@ -33,6 +33,24 @@ const formatIssues = (issues: { path: PropertyKey[]; message: string }[]) => {
   });
 };
 
+const buildContractViolationDetails = (issues: z.ZodIssue[]) => {
+  const topLevelPaths = new Set<string>();
+
+  for (const issue of issues) {
+    if (issue.path.length === 0 || typeof issue.path[0] !== "string") {
+      topLevelPaths.add("root");
+      continue;
+    }
+    topLevelPaths.add(issue.path[0]);
+  }
+
+  return {
+    code: "contract_violation" as const,
+    issues_count: issues.length,
+    issues_paths: [...topLevelPaths].sort((a, b) => a.localeCompare(b))
+  };
+};
+
 export async function POST(request: Request) {
   let body: unknown;
   try {
@@ -126,7 +144,14 @@ export async function POST(request: Request) {
 
   const parsedSuccessPayload = EvidenceReplayResponseV0Schema.safeParse(successPayload);
   if (!parsedSuccessPayload.success) {
-    return NextResponse.json({ ok: false, error: "error" }, { status: 500 });
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "internal_error",
+        details: buildContractViolationDetails(parsedSuccessPayload.error.issues)
+      },
+      { status: 500 }
+    );
   }
 
   return NextResponse.json(parsedSuccessPayload.data);
