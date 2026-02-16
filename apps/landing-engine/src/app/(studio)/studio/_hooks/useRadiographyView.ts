@@ -135,8 +135,8 @@ const parseLatestRunLogResponse = (body: unknown): RadiographyRunLog | null => {
     return null;
   }
 
-  const maybe = body as { ok?: unknown; runlog?: unknown; reason?: unknown };
-  if (maybe.ok === false && maybe.reason === "none") {
+  const maybe = body as { ok?: unknown; runlog?: unknown; error?: unknown };
+  if (maybe.ok === false && maybe.error === "not_found") {
     return null;
   }
   if (maybe.ok !== true) {
@@ -154,11 +154,11 @@ const parseRunLogResponse = (
     return { runlog: null, reason: "invalid" };
   }
 
-  const maybe = body as { ok?: unknown; runlog?: unknown; reason?: unknown };
+  const maybe = body as { ok?: unknown; runlog?: unknown; error?: unknown };
   if (maybe.ok !== true) {
     return {
       runlog: null,
-      reason: typeof maybe.reason === "string" ? maybe.reason : "invalid"
+      reason: typeof maybe.error === "string" ? maybe.error : "invalid"
     };
   }
 
@@ -245,14 +245,14 @@ const parseEvidenceIndexResponse = (
 
   const maybe = body as {
     ok?: unknown;
-    reason?: unknown;
+    error?: unknown;
     evidence_index?: unknown;
   };
 
   if (maybe.ok !== true) {
     return {
       ok: false,
-      reason: typeof maybe.reason === "string" ? maybe.reason : "invalid"
+      reason: typeof maybe.error === "string" ? maybe.error : "invalid"
     };
   }
 
@@ -532,13 +532,13 @@ const sanitizeReplayErrorMessage = (status: number): string => {
     return "Invalid replay request.";
   }
   if (status === 409) {
-    return "Stub already exists for this run_id.";
+    return "Integrity mismatch. Bundle appears tampered.";
   }
   if (status === 413) {
     return "Bundle too large.";
   }
   if (status === 422) {
-    return "Integrity mismatch. Bundle appears tampered.";
+    return "Replay payload is invalid.";
   }
   if (status >= 500) {
     return "Server error.";
@@ -776,11 +776,10 @@ export const useRadiographyView = ({
       cache: "no-store"
     });
 
-    if (!response.ok) {
+    const body = (await response.json()) as unknown;
+    if (!response.ok && response.status !== 404) {
       throw new Error("Failed to fetch latest run log");
     }
-
-    const body = (await response.json()) as unknown;
     return parseLatestRunLogResponse(body);
   }, []);
 
@@ -791,11 +790,10 @@ export const useRadiographyView = ({
       cache: "no-store"
     });
 
-    if (!response.ok) {
+    const body = (await response.json()) as unknown;
+    if (!response.ok && response.status >= 500) {
       throw new Error("Failed to fetch run log");
     }
-
-    const body = (await response.json()) as unknown;
     return parseRunLogResponse(body);
   }, []);
 

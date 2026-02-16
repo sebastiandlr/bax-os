@@ -61,14 +61,14 @@ export async function POST(request: Request) {
     body = await request.json();
   } catch {
     return NextResponse.json(
-      { ok: false, errors: ["body: request body must be valid JSON"] },
+      { ok: false, error: "invalid", errors: ["body: request body must be valid JSON"] },
       { status: 400 }
     );
   }
 
   if (!isRecord(body) || !("seed_urls_override" in body)) {
     return NextResponse.json(
-      { ok: false, reason: "seed_urls_required" },
+      { ok: false, error: "seed_urls_required" },
       { status: 400 }
     );
   }
@@ -76,25 +76,28 @@ export async function POST(request: Request) {
   const parsedBody = ReplayBodySchema.safeParse(body);
   if (!parsedBody.success) {
     return NextResponse.json(
-      { ok: false, errors: formatIssues(parsedBody.error.issues) },
+      { ok: false, error: "invalid", errors: formatIssues(parsedBody.error.issues) },
       { status: 400 }
     );
   }
 
   const source = await readRunLogById(parsedBody.data.run_id);
   if (!source.ok) {
-    return NextResponse.json({ ok: false, reason: source.reason });
+    return NextResponse.json(
+      { ok: false, error: source.reason },
+      { status: source.reason === "not_found" ? 404 : 400 }
+    );
   }
 
   const buildSpec = BuildSpecV0Schema.safeParse(source.runlog.buildspec);
   if (!buildSpec.success) {
-    return NextResponse.json({ ok: false, reason: "invalid" }, { status: 400 });
+    return NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
   }
 
   const normalizedSeedUrls = normalizeSeedUrls(parsedBody.data.seed_urls_override);
   if (normalizedSeedUrls.length === 0) {
     return NextResponse.json(
-      { ok: false, reason: "seed_urls_required" },
+      { ok: false, error: "seed_urls_required" },
       { status: 400 }
     );
   }

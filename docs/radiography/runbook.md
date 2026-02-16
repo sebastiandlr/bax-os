@@ -129,7 +129,7 @@ Action:
 - change `bundle.run_id` and `bundle.evidence_index.run_id` before import
 - for replay persist, provide a new `options.run_id`
 
-## “422 integrity_mismatch” during strict replay
+## “409 integrity_mismatch” during strict replay
 
 Meaning:
 
@@ -139,6 +139,11 @@ Action:
 
 - retry with untampered bundle
 - or intentionally set `strict=false` for diagnostic replay only
+
+Note:
+
+- strict replay integrity mismatches now return HTTP `409` with:
+  - `{ "ok": false, "error": "integrity_mismatch", ... }`
 
 ## Hydration mismatch in Studio
 

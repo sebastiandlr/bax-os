@@ -4,6 +4,12 @@ Base: `http://localhost:3000`
 
 All endpoints below are implemented in `apps/landing-engine/src/app/api/radiography/runlog/**`.
 
+Error payloads are normalized to:
+
+```json
+{ "ok": false, "error": "<snake_case>", "...optional": "fields" }
+```
+
 ## Endpoints
 
 ## GET `/api/radiography/runlog`
@@ -40,19 +46,21 @@ All endpoints below are implemented in `apps/landing-engine/src/app/api/radiogra
 
 - Success `200`:
   - `{ "ok": true, "runlog": { ...RadiographyRunLogV0... } }`
-- Not found / invalid (current behavior is still HTTP `200`):
-  - `{ "ok": false, "reason": "not_found|invalid" }`
+- Not found:
+  - `404`: `{ "ok": false, "error": "not_found" }`
+- Invalid:
+  - `400`: `{ "ok": false, "error": "invalid" }`
 - Error `500`:
-  - `{ "ok": false, "reason": "error", "error": "..." }`
+  - `{ "ok": false, "error": "error", "message": "..." }`
 
 ## GET `/api/radiography/runlog/evidence/[run_id]`
 
 - Success `200`:
   - `{ "ok": true, "evidence_index": { "run_id", "created_at", "artifacts": [...] } }`
 - Errors:
-  - `400`: `{ "ok": false, "reason": "invalid" }`
-  - `404`: `{ "ok": false, "reason": "not_found" }`
-  - `500`: `{ "ok": false, "reason": "error", "error": "..." }`
+  - `400`: `{ "ok": false, "error": "invalid" }`
+  - `404`: `{ "ok": false, "error": "not_found" }`
+  - `500`: `{ "ok": false, "error": "error", "message": "..." }`
 
 ## GET `/api/radiography/runlog/evidence/[run_id]/artifact/[artifact_id]`
 
@@ -153,7 +161,7 @@ All endpoints below are implemented in `apps/landing-engine/src/app/api/radiogra
   - `400`: invalid body/options
   - `409`: `run_already_exists` when `persist_stub=true` collides
   - `413`: `bundle_too_large`
-  - `422`: `integrity_mismatch` (strict mode)
+  - `409`: `integrity_mismatch` (strict mode)
   - `5xx`: unhandled server error
 
 ## cURL Examples
@@ -187,7 +195,7 @@ curl -s -X POST "http://localhost:3000/api/radiography/runlog/evidence/replay" \
   -H "content-type: application/json" \
   -d '{"bundle":{}}'
 
-# B) 422 strict replay integrity mismatch (tampered bundle metadata)
+# B) 409 strict replay integrity mismatch (tampered bundle metadata)
 # (change one artifact sha256 in /tmp/evidence.bundle.json first)
 curl -s -X POST "http://localhost:3000/api/radiography/runlog/evidence/replay" \
   -H "content-type: application/json" \

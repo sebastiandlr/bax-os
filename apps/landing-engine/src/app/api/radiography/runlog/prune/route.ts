@@ -35,7 +35,7 @@ export async function POST(request: Request) {
     body = await readOptionalJsonBody(request);
   } catch {
     return NextResponse.json(
-      { ok: false, errors: ["body: request body must be valid JSON"] },
+      { ok: false, error: "invalid", errors: ["body: request body must be valid JSON"] },
       { status: 400 }
     );
   }
@@ -43,7 +43,7 @@ export async function POST(request: Request) {
   const parsedBody = PruneBodySchema.safeParse(body);
   if (!parsedBody.success) {
     return NextResponse.json(
-      { ok: false, errors: formatIssues(parsedBody.error.issues) },
+      { ok: false, error: "invalid", errors: formatIssues(parsedBody.error.issues) },
       { status: 400 }
     );
   }
@@ -54,6 +54,6 @@ export async function POST(request: Request) {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Failed to prune run logs";
-    return NextResponse.json({ ok: false, reason: "error", error: message }, { status: 500 });
+    return NextResponse.json({ ok: false, error: "error", message }, { status: 500 });
   }
 }

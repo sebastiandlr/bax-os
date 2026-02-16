@@ -66,7 +66,7 @@ export async function GET(request: Request) {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Failed to list runlogs";
-    return NextResponse.json({ ok: false, reason: "error", error: message }, { status: 500 });
+    return NextResponse.json({ ok: false, error: "error", message }, { status: 500 });
   }
 }
 
@@ -76,7 +76,7 @@ export async function POST(request: Request) {
     body = await request.json();
   } catch {
     return NextResponse.json(
-      { ok: false, errors: ["runlog: request body must be valid JSON"] },
+      { ok: false, error: "invalid", errors: ["runlog: request body must be valid JSON"] },
       { status: 400 }
     );
   }
@@ -84,14 +84,14 @@ export async function POST(request: Request) {
   const parsedBody = RunlogPostBodySchema.safeParse(body);
   if (!parsedBody.success) {
     return NextResponse.json(
-      { ok: false, errors: formatIssues(parsedBody.error.issues) },
+      { ok: false, error: "invalid", errors: formatIssues(parsedBody.error.issues) },
       { status: 400 }
     );
   }
 
   if (!isRecord(parsedBody.data.runlog)) {
     return NextResponse.json(
-      { ok: false, errors: ["runlog: must be an object"] },
+      { ok: false, error: "invalid", errors: ["runlog: must be an object"] },
       { status: 400 }
     );
   }
@@ -117,7 +117,7 @@ export async function POST(request: Request) {
 
   if (!parsed.success) {
     return NextResponse.json(
-      { ok: false, errors: formatIssues(parsed.error.issues) },
+      { ok: false, error: "invalid", errors: formatIssues(parsed.error.issues) },
       { status: 400 }
     );
   }
