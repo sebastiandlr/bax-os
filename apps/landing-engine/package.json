@@ -12,7 +12,8 @@
     "radiography:evidence": "node scripts/radiography/evidence.mjs",
     "radiography:evidence:artifact": "node scripts/radiography/evidence-artifact.mjs",
     "radiography:evidence:bundle": "node scripts/radiography/evidence-bundle.mjs export",
-    "radiography:evidence:import": "node scripts/radiography/evidence-bundle.mjs import"
+    "radiography:evidence:import": "node scripts/radiography/evidence-bundle.mjs import",
+    "radiography:evidence:replay": "node scripts/radiography/evidence-replay.mjs"
   },
   "dependencies": {
     "@bax/buildspec": "file:../../packages/buildspec",

@@ -318,7 +318,9 @@ export function RadiographyPanel({
                             {item.run_id}
                             {item.is_stub || item.source === "imported_bundle" ? (
                               <div className="mt-1 text-[10px] text-emerald-300">
-                                Imported (stub)
+                                {item.source === "portable_replay"
+                                  ? "Portable replay (stub)"
+                                  : "Imported (stub)"}
                               </div>
                             ) : null}
                           </td>

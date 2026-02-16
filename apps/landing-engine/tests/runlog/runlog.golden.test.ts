@@ -1274,3 +1274,385 @@ test("evidence bundle import rejects traversal, oversized payload, and non-json 
   assert.equal(nonJsonBody.ok, false);
   assert.equal(nonJsonBody.error, "artifact_not_json");
 });
+
+test("evidence replay returns deterministic output with match=true for untampered bundle", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const runlogRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/route.ts"
+  );
+  const bundleRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/evidence/[run_id]/bundle/route.ts");
+  const replayRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/evidence/replay/route.ts"
+  );
+
+  const runId = "run-replay1";
+  const postResponse = await runlogRoute.POST(
+    new Request("http://localhost/api/radiography/runlog", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runlog: createRunLogFixture({
+          run_id: runId,
+          status: "soft_fail",
+          core_percent: 50,
+          reason_codes: ["needs_manual_verify"]
+        }),
+        seed_urls_raw: ["https://example.com/replay"]
+      })
+    })
+  );
+  assert.equal(postResponse.status, 200);
+
+  const bundleResponse = await bundleRoute.GET(
+    new Request(`http://localhost/api/radiography/runlog/evidence/${runId}/bundle`),
+    { params: Promise.resolve({ run_id: runId }) }
+  );
+  assert.equal(bundleResponse.status, 200);
+  const bundle = JSON.parse(await bundleResponse.text()) as unknown;
+
+  const makeReplayRequest = () =>
+    replayRoute.POST(
+      new Request("http://localhost/api/radiography/runlog/evidence/replay", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ bundle })
+      })
+    );
+
+  const replayA = await makeReplayRequest();
+  assert.equal(replayA.status, 200);
+  const bodyA = (await replayA.json()) as {
+    ok?: boolean;
+    replay?: {
+      run_id: string;
+      gating_decision: {
+        status: string;
+        core_percent: number;
+        reason_codes: string[];
+      };
+    };
+    compare?: {
+      match: boolean;
+      baseline: {
+        status: string;
+        core_percent: number;
+        reason_codes: string[];
+      };
+      diff: {
+        integrity_warnings: string[];
+      };
+    };
+  };
+  assert.equal(bodyA.ok, true);
+  assert.equal(typeof bodyA.replay?.run_id, "string");
+  assert.equal(bodyA.compare?.match, true);
+  assert.equal(bodyA.compare?.diff.integrity_warnings.length, 0);
+  assert.equal(bodyA.replay?.gating_decision.status, bodyA.compare?.baseline.status);
+  assert.equal(
+    bodyA.replay?.gating_decision.core_percent,
+    bodyA.compare?.baseline.core_percent
+  );
+  assert.deepEqual(
+    bodyA.replay?.gating_decision.reason_codes,
+    bodyA.compare?.baseline.reason_codes
+  );
+  assertNoLeakPatterns(JSON.stringify(bodyA));
+
+  const replayB = await makeReplayRequest();
+  assert.equal(replayB.status, 200);
+  const bodyB = (await replayB.json()) as unknown;
+  assert.deepEqual(bodyB, bodyA);
+});
+
+test("evidence replay strict mode fails with 422 integrity_mismatch when bundle is tampered", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const runlogRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/route.ts"
+  );
+  const bundleRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/evidence/[run_id]/bundle/route.ts");
+  const replayRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/evidence/replay/route.ts"
+  );
+
+  const runId = "run-replay2";
+  await runlogRoute.POST(
+    new Request("http://localhost/api/radiography/runlog", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runlog: createRunLogFixture({ run_id: runId }),
+        seed_urls_raw: ["https://example.com/replay-2"]
+      })
+    })
+  );
+
+  const bundleResponse = await bundleRoute.GET(
+    new Request(`http://localhost/api/radiography/runlog/evidence/${runId}/bundle`),
+    { params: Promise.resolve({ run_id: runId }) }
+  );
+  assert.equal(bundleResponse.status, 200);
+
+  const tamperedBundle = JSON.parse(await bundleResponse.text()) as {
+    artifacts: Array<{
+      kind: string;
+      content: Record<string, unknown>;
+    }>;
+  };
+
+  const gatingArtifact = tamperedBundle.artifacts.find((artifact) => artifact.kind === "gating");
+  assert.ok(gatingArtifact);
+  gatingArtifact.content = {
+    ...(gatingArtifact.content ?? {}),
+    core_percent: 99
+  };
+
+  const replayResponse = await replayRoute.POST(
+    new Request("http://localhost/api/radiography/runlog/evidence/replay", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bundle: tamperedBundle })
+    })
+  );
+  assert.equal(replayResponse.status, 422);
+  const replayBody = (await replayResponse.json()) as {
+    ok?: boolean;
+    error?: string;
+    details?: { code?: string; artifact_id?: string };
+  };
+  assert.equal(replayBody.ok, false);
+  assert.equal(replayBody.error, "integrity_mismatch");
+  assert.equal(typeof replayBody.details?.code, "string");
+  assertNoLeakPatterns(JSON.stringify(replayBody));
+});
+
+test("evidence replay no-strict mode succeeds with warnings and match=false", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const runlogRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/route.ts"
+  );
+  const bundleRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/evidence/[run_id]/bundle/route.ts");
+  const replayRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/evidence/replay/route.ts"
+  );
+
+  const runId = "run-replay3";
+  await runlogRoute.POST(
+    new Request("http://localhost/api/radiography/runlog", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runlog: createRunLogFixture({ run_id: runId }),
+        seed_urls_raw: ["https://example.com/replay-3"]
+      })
+    })
+  );
+
+  const bundleResponse = await bundleRoute.GET(
+    new Request(`http://localhost/api/radiography/runlog/evidence/${runId}/bundle`),
+    { params: Promise.resolve({ run_id: runId }) }
+  );
+  assert.equal(bundleResponse.status, 200);
+
+  const tamperedBundle = JSON.parse(await bundleResponse.text()) as {
+    artifacts: Array<{
+      kind: string;
+      content: Record<string, unknown>;
+    }>;
+  };
+  const inputsArtifact = tamperedBundle.artifacts.find(
+    (artifact) => artifact.kind === "inputs_summary"
+  );
+  assert.ok(inputsArtifact);
+  inputsArtifact.content = {
+    ...(inputsArtifact.content ?? {}),
+    city: "PLACEHOLDER: MONTERREY"
+  };
+
+  const replayResponse = await replayRoute.POST(
+    new Request("http://localhost/api/radiography/runlog/evidence/replay", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        bundle: tamperedBundle,
+        options: {
+          strict: false
+        }
+      })
+    })
+  );
+  assert.equal(replayResponse.status, 200);
+  const replayBody = (await replayResponse.json()) as {
+    ok?: boolean;
+    compare?: {
+      match: boolean;
+      diff: {
+        integrity_warnings: string[];
+      };
+    };
+    replay?: {
+      gating_decision: {
+        status: string;
+      };
+    };
+  };
+  assert.equal(replayBody.ok, true);
+  assert.equal(replayBody.compare?.match, false);
+  assert.ok((replayBody.compare?.diff.integrity_warnings.length ?? 0) >= 1);
+  assert.equal(replayBody.replay?.gating_decision.status, "soft_fail");
+  assertNoLeakPatterns(JSON.stringify(replayBody));
+});
+
+test("evidence replay persist_stub writes portable_replay stub and returns 409 on collision", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const runlogRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/route.ts"
+  );
+  const bundleRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/evidence/[run_id]/bundle/route.ts");
+  const replayRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/evidence/replay/route.ts"
+  );
+  const listRoute = await importFresh<{ GET: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/route.ts"
+  );
+  const byIdRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/[run_id]/route.ts");
+
+  const sourceRunId = "run-replay4-src";
+  await runlogRoute.POST(
+    new Request("http://localhost/api/radiography/runlog", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runlog: createRunLogFixture({ run_id: sourceRunId }),
+        seed_urls_raw: ["https://example.com/replay-4"]
+      })
+    })
+  );
+
+  const bundleResponse = await bundleRoute.GET(
+    new Request(`http://localhost/api/radiography/runlog/evidence/${sourceRunId}/bundle`),
+    { params: Promise.resolve({ run_id: sourceRunId }) }
+  );
+  assert.equal(bundleResponse.status, 200);
+
+  const bundle = JSON.parse(await bundleResponse.text()) as {
+    run_id: string;
+    evidence_index: {
+      run_id: string;
+    };
+  };
+  const replayRunId = "runreplaystub1";
+  bundle.run_id = replayRunId;
+  bundle.evidence_index.run_id = replayRunId;
+
+  const persistResponse = await replayRoute.POST(
+    new Request("http://localhost/api/radiography/runlog/evidence/replay", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        bundle,
+        options: {
+          persist_stub: true,
+          run_id: replayRunId
+        }
+      })
+    })
+  );
+  assert.equal(persistResponse.status, 200);
+  const persistBody = (await persistResponse.json()) as {
+    ok?: boolean;
+    persisted?: {
+      run_id: string;
+      source: string;
+      is_stub: boolean;
+    };
+  };
+  assert.equal(persistBody.ok, true);
+  assert.equal(persistBody.persisted?.run_id, replayRunId);
+  assert.equal(persistBody.persisted?.source, "portable_replay");
+  assert.equal(persistBody.persisted?.is_stub, true);
+  assertNoLeakPatterns(JSON.stringify(persistBody));
+
+  const listResponse = await listRoute.GET(
+    new Request("http://localhost/api/radiography/runlog?limit=20")
+  );
+  assert.equal(listResponse.status, 200);
+  const listBody = (await listResponse.json()) as {
+    ok?: boolean;
+    items?: Array<{
+      run_id: string;
+      source?: string;
+      is_stub?: boolean;
+    }>;
+  };
+  assert.equal(listBody.ok, true);
+  const replaySummary = listBody.items?.find((item) => item.run_id === replayRunId);
+  assert.ok(replaySummary);
+  assert.equal(replaySummary?.source, "portable_replay");
+  assert.equal(replaySummary?.is_stub, true);
+  assertNoLeakPatterns(JSON.stringify(listBody));
+
+  const byIdResponse = await byIdRoute.GET(
+    new Request(`http://localhost/api/radiography/runlog/${replayRunId}`),
+    { params: Promise.resolve({ run_id: replayRunId }) }
+  );
+  assert.equal(byIdResponse.status, 200);
+  const byIdBody = (await byIdResponse.json()) as {
+    ok?: boolean;
+    runlog?: { source?: string; is_stub?: boolean };
+  };
+  assert.equal(byIdBody.ok, true);
+  assert.equal(byIdBody.runlog?.source, "portable_replay");
+  assert.equal(byIdBody.runlog?.is_stub, true);
+
+  const collisionResponse = await replayRoute.POST(
+    new Request("http://localhost/api/radiography/runlog/evidence/replay", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        bundle,
+        options: {
+          persist_stub: true,
+          run_id: replayRunId
+        }
+      })
+    })
+  );
+  assert.equal(collisionResponse.status, 409);
+  const collisionBody = (await collisionResponse.json()) as { ok?: boolean; error?: string };
+  assert.equal(collisionBody.ok, false);
+  assert.equal(collisionBody.error, "run_already_exists");
+  assertNoLeakPatterns(JSON.stringify(collisionBody));
+});

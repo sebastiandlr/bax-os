@@ -179,7 +179,8 @@ const isRunLogListItem = (value: unknown): value is RunLogListItem => {
     typeof item.unique_hosts_count === "number" &&
     (item.source === undefined ||
       item.source === "local_run" ||
-      item.source === "imported_bundle") &&
+      item.source === "imported_bundle" ||
+      item.source === "portable_replay") &&
     (item.is_stub === undefined || typeof item.is_stub === "boolean") &&
     (item.top_blockers === undefined ||
       (Array.isArray(item.top_blockers) &&

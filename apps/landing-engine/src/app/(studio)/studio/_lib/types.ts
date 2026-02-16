@@ -73,7 +73,7 @@ export type RunLogListItem = {
   reason_codes: string[];
   seed_urls_count: number;
   unique_hosts_count: number;
-  source?: "local_run" | "imported_bundle";
+  source?: "local_run" | "imported_bundle" | "portable_replay";
   is_stub?: boolean;
   top_blockers?: string[];
 };
