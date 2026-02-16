@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -464,4 +465,180 @@ test("evidence endpoint returns index without path or URL leaks", async () => {
   assert.equal(bodyText.includes(".bax/runlogs"), false);
   assert.equal(bodyText.includes("http://"), false);
   assert.equal(bodyText.includes("https://"), false);
+});
+
+test("evidence artifact endpoint returns sanitized artifact without leaks", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const runlogRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/route.ts"
+  );
+  const artifactRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string; artifact_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/evidence/[run_id]/artifact/[artifact_id]/route.ts");
+
+  const postResponse = await runlogRoute.POST(
+    new Request("http://localhost/api/radiography/runlog", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runlog: createRunLogFixture({ run_id: "run-artf01" }),
+        seed_urls_raw: ["https://example.com/path?a=1"]
+      })
+    })
+  );
+  const postBody = (await postResponse.json()) as { ok?: boolean; run_id?: string };
+  assert.equal(postResponse.status, 200);
+  assert.equal(postBody.ok, true);
+  assert.equal(typeof postBody.run_id, "string");
+
+  const runId = postBody.run_id as string;
+  const index = JSON.parse(
+    await readFile(path.join(evidenceDir, runId, "index.json"), "utf8")
+  ) as {
+    artifacts: Array<{ id: string; kind: string }>;
+  };
+  const artifact = index.artifacts.find((item) => item.kind === "inputs_summary");
+  assert.ok(artifact);
+
+  const response = await artifactRoute.GET(
+    new Request(
+      `http://localhost/api/radiography/runlog/evidence/${runId}/artifact/${artifact.id}`
+    ),
+    { params: Promise.resolve({ run_id: runId, artifact_id: artifact.id }) }
+  );
+  assert.equal(response.status, 200);
+
+  const body = (await response.json()) as {
+    ok?: boolean;
+    artifact?: {
+      id: string;
+      kind: string;
+      content: Record<string, unknown>;
+    };
+  };
+  assert.equal(body.ok, true);
+  assert.equal(body.artifact?.id, artifact.id);
+  assert.equal(body.artifact?.kind, "inputs_summary");
+  assert.equal(typeof body.artifact?.content, "object");
+  assert.ok(body.artifact?.content);
+
+  const serialized = JSON.stringify(body);
+  assert.equal(serialized.includes("/Users/"), false);
+  assert.equal(serialized.includes("\\\\Users\\\\"), false);
+  assert.equal(serialized.includes(".bax/runlogs"), false);
+  assert.equal(serialized.includes("http://"), false);
+  assert.equal(serialized.includes("https://"), false);
+});
+
+test("evidence artifact endpoint detects integrity mismatch", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const runlogRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/route.ts"
+  );
+  const artifactRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string; artifact_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/evidence/[run_id]/artifact/[artifact_id]/route.ts");
+
+  const postResponse = await runlogRoute.POST(
+    new Request("http://localhost/api/radiography/runlog", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runlog: createRunLogFixture({ run_id: "run-artf02" }),
+        seed_urls_raw: ["https://example.com"]
+      })
+    })
+  );
+  const postBody = (await postResponse.json()) as { ok?: boolean; run_id?: string };
+  assert.equal(postResponse.status, 200);
+  assert.equal(postBody.ok, true);
+  assert.equal(typeof postBody.run_id, "string");
+
+  const runId = postBody.run_id as string;
+  const index = JSON.parse(
+    await readFile(path.join(evidenceDir, runId, "index.json"), "utf8")
+  ) as { artifacts: Array<{ id: string; kind: string }> };
+  const artifact = index.artifacts.find((item) => item.kind === "gating");
+  assert.ok(artifact);
+
+  const artifactPath = path.join(evidenceDir, runId, `${artifact.id}.json`);
+  await writeFile(artifactPath, "{\"tampered\":true}\n", "utf8");
+
+  const response = await artifactRoute.GET(
+    new Request(
+      `http://localhost/api/radiography/runlog/evidence/${runId}/artifact/${artifact.id}`
+    ),
+    { params: Promise.resolve({ run_id: runId, artifact_id: artifact.id }) }
+  );
+
+  assert.equal(response.status, 409);
+  const body = (await response.json()) as { ok?: boolean; error?: string };
+  assert.equal(body.ok, false);
+  assert.equal(body.error, "integrity_mismatch");
+});
+
+test("evidence artifact endpoint rejects non-json artifact with artifact_not_json", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const artifactRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string; artifact_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/evidence/[run_id]/artifact/[artifact_id]/route.ts");
+
+  const runId = "run-nonjs1";
+  const artifactId = "inputs_summary-abcd1234";
+  const runDir = path.join(evidenceDir, runId);
+  await mkdir(runDir, { recursive: true });
+
+  const artifactText = "not json content\n";
+  const sha = createHash("sha256").update(artifactText, "utf8").digest("hex");
+  const bytes = Buffer.byteLength(artifactText, "utf8");
+
+  await writeFile(path.join(runDir, `${artifactId}.json`), artifactText, "utf8");
+  await writeFile(
+    path.join(runDir, "index.json"),
+    `${JSON.stringify(
+      {
+        run_id: runId,
+        created_at: "2026-02-16T00:00:00.000Z",
+        artifacts: [
+          {
+            id: artifactId,
+            kind: "inputs_summary",
+            sha256: sha,
+            bytes,
+            created_at: "2026-02-16T00:00:00.000Z"
+          }
+        ]
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const response = await artifactRoute.GET(
+    new Request(
+      `http://localhost/api/radiography/runlog/evidence/${runId}/artifact/${artifactId}`
+    ),
+    { params: Promise.resolve({ run_id: runId, artifact_id: artifactId }) }
+  );
+
+  assert.equal(response.status, 422);
+  const body = (await response.json()) as { ok?: boolean; error?: string };
+  assert.equal(body.ok, false);
+  assert.equal(body.error, "artifact_not_json");
 });

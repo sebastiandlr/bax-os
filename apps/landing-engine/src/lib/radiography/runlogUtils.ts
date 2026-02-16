@@ -16,6 +16,7 @@ import {
 import { detectLandingEngineRoot } from "../spec/buildspecStorage";
 
 export const RUNLOG_RUN_ID_PATTERN = /^[a-zA-Z0-9_-]{6,80}$/;
+export const EVIDENCE_ARTIFACT_ID_PATTERN = /^[a-zA-Z0-9_-]{3,120}$/;
 export const FORBIDDEN_RUNLOG_KEY_NAMES = new Set(["path", "seed_urls_raw"]);
 const FORBIDDEN_RUNLOG_STRING_PATTERNS = [
   /\/Users\//,
@@ -240,6 +241,37 @@ const hasForbiddenRunLogContent = (
   }
 
   return false;
+};
+
+const redactForbiddenArtifactContent = (value: unknown, trail: string[] = []): unknown => {
+  if (typeof value === "string") {
+    return FORBIDDEN_RUNLOG_STRING_PATTERNS.some((pattern) => pattern.test(value))
+      ? "[REDACTED]"
+      : value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => redactForbiddenArtifactContent(item, trail));
+  }
+
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, childValue] of Object.entries(value)) {
+    if (FORBIDDEN_RUNLOG_KEY_NAMES.has(key)) {
+      continue;
+    }
+
+    if (trail.join(".") === "inputs.seed_urls" && key === "urls") {
+      continue;
+    }
+
+    sanitized[key] = redactForbiddenArtifactContent(childValue, [...trail, key]);
+  }
+
+  return sanitized;
 };
 
 export const parseStoredRunLog = (value: unknown): RadiographyRunLogV0 | null => {
@@ -774,4 +806,90 @@ export const readEvidenceIndexByRunId = async (
   } catch {
     return { ok: false, reason: "invalid" };
   }
+};
+
+type ReadEvidenceArtifactResult =
+  | {
+      ok: true;
+      artifact: EvidenceArtifactV0 & {
+        content: Record<string, unknown>;
+      };
+    }
+  | {
+      ok: false;
+      error: "invalid" | "not_found" | "integrity_mismatch" | "artifact_not_json";
+    };
+
+export const readEvidenceArtifactById = async (
+  run_id: string,
+  artifact_id: string
+): Promise<ReadEvidenceArtifactResult> => {
+  if (!RUNLOG_RUN_ID_PATTERN.test(run_id) || !EVIDENCE_ARTIFACT_ID_PATTERN.test(artifact_id)) {
+    return { ok: false, error: "invalid" };
+  }
+
+  const indexResult = await readEvidenceIndexByRunId(run_id);
+  if (!indexResult.ok) {
+    return {
+      ok: false,
+      error: indexResult.reason === "not_found" ? "not_found" : "invalid"
+    };
+  }
+
+  const metadata = indexResult.evidence_index.artifacts.find((artifact) => artifact.id === artifact_id);
+  if (!metadata) {
+    return { ok: false, error: "not_found" };
+  }
+
+  if (!artifact_id.startsWith(`${metadata.kind}-`)) {
+    return { ok: false, error: "integrity_mismatch" };
+  }
+
+  const evidenceRunDir = getEvidenceDirForRun(run_id);
+  const artifactPath = path.join(evidenceRunDir, `${artifact_id}.json`);
+  if (!isPathInsideDir(evidenceRunDir, artifactPath)) {
+    return { ok: false, error: "invalid" };
+  }
+
+  let artifactText: string;
+  try {
+    artifactText = await readFile(artifactPath, "utf8");
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code === "ENOENT") {
+      return { ok: false, error: "not_found" };
+    }
+    return { ok: false, error: "invalid" };
+  }
+
+  const computedSha = sha256Hex(artifactText);
+  const computedBytes = Buffer.byteLength(artifactText, "utf8");
+
+  if (computedSha !== metadata.sha256 || computedBytes !== metadata.bytes) {
+    return { ok: false, error: "integrity_mismatch" };
+  }
+
+  let parsedContent: unknown;
+  try {
+    parsedContent = JSON.parse(artifactText) as unknown;
+  } catch {
+    return { ok: false, error: "artifact_not_json" };
+  }
+
+  if (!isRecord(parsedContent)) {
+    return { ok: false, error: "artifact_not_json" };
+  }
+
+  const sanitizedContent = redactForbiddenArtifactContent(parsedContent);
+  if (!isRecord(sanitizedContent)) {
+    return { ok: false, error: "artifact_not_json" };
+  }
+
+  return {
+    ok: true,
+    artifact: {
+      ...metadata,
+      content: sanitizedContent
+    }
+  };
 };
