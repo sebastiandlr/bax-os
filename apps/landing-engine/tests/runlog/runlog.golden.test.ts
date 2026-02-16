@@ -1371,7 +1371,7 @@ test("evidence replay returns deterministic output with match=true for untampere
   assert.deepEqual(bodyB, bodyA);
 });
 
-test("evidence replay strict mode fails with 422 integrity_mismatch when bundle is tampered", async () => {
+test("evidence replay strict mode fails with 409 integrity_mismatch when bundle is tampered", async () => {
   await resetRunlogDir();
   await resetEvidenceDir();
 
@@ -1427,7 +1427,7 @@ test("evidence replay strict mode fails with 422 integrity_mismatch when bundle 
       body: JSON.stringify({ bundle: tamperedBundle })
     })
   );
-  assert.equal(replayResponse.status, 422);
+  assert.equal(replayResponse.status, 409);
   const replayBody = (await replayResponse.json()) as {
     ok?: boolean;
     error?: string;
@@ -1437,6 +1437,50 @@ test("evidence replay strict mode fails with 422 integrity_mismatch when bundle 
   assert.equal(replayBody.error, "integrity_mismatch");
   assert.equal(typeof replayBody.details?.code, "string");
   assertNoLeakPatterns(JSON.stringify(replayBody));
+});
+
+test("runlog by id returns 404 not_found with unified error shape", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const runlogByIdRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/[run_id]/route.ts");
+
+  const response = await runlogByIdRoute.GET(
+    new Request("http://localhost/api/radiography/runlog/missing01"),
+    { params: Promise.resolve({ run_id: "missing01" }) }
+  );
+
+  assert.equal(response.status, 404);
+  const body = (await response.json()) as { ok?: boolean; error?: string };
+  assert.equal(body.ok, false);
+  assert.equal(body.error, "not_found");
+});
+
+test("runlog by id returns 400 invalid with unified error shape", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const runlogByIdRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/[run_id]/route.ts");
+
+  const response = await runlogByIdRoute.GET(
+    new Request("http://localhost/api/radiography/runlog/.."),
+    { params: Promise.resolve({ run_id: ".." }) }
+  );
+
+  assert.equal(response.status, 400);
+  const body = (await response.json()) as { ok?: boolean; error?: string };
+  assert.equal(body.ok, false);
+  assert.equal(body.error, "invalid");
 });
 
 test("evidence replay no-strict mode succeeds with warnings and match=false", async () => {

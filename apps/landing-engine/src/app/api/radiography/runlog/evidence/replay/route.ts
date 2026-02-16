@@ -66,7 +66,7 @@ export async function POST(request: Request) {
       replayResult.error === "bundle_too_large"
         ? 413
         : replayResult.error === "integrity_mismatch"
-          ? 422
+          ? 409
           : 400;
 
     return NextResponse.json(
