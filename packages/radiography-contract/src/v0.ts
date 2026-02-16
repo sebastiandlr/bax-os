@@ -351,7 +351,7 @@ export type RadiographyRunLogV0 = z.infer<typeof RadiographyRunLogV0Schema>;
 export const EvidenceReplayCompareV0Schema = z
   .object({
     /** Baseline run id (source bundle.run_id). */
-    baseline_run_id: z.string().min(1).regex(/^[a-z0-9-]+$/i),
+    baseline_run_id: z.string().regex(/^[a-zA-Z0-9_-]{6,80}$/),
     baseline: GatingDecisionV0Schema,
     match: z.boolean(),
     diff: z
@@ -376,7 +376,7 @@ export const EvidenceReplayResponseV0Schema = z
     ok: z.literal(true),
     replay: z
       .object({
-        run_id: z.string().min(1).regex(/^[a-z0-9-]+$/i),
+        run_id: z.string().regex(/^[a-zA-Z0-9_-]{6,80}$/),
         gating_decision: GatingDecisionV0Schema,
         decision_trace: z.array(DecisionTraceEntryV0Schema)
       })
@@ -384,7 +384,7 @@ export const EvidenceReplayResponseV0Schema = z
     compare: EvidenceReplayCompareV0Schema,
     persisted: z
       .object({
-        run_id: z.string().min(1).regex(/^[a-z0-9-]+$/i),
+        run_id: z.string().regex(/^[a-zA-Z0-9_-]{6,80}$/),
         is_stub: z.literal(true),
         source: z.literal("portable_replay")
       })

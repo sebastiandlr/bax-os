@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
+import { EvidenceReplayResponseV0Schema } from "@bax/radiography-contract";
 
 type RunLogFixtureInput = {
   run_id: string;
@@ -1365,6 +1366,7 @@ test("evidence replay returns deterministic output with match=true for untampere
     bodyA.replay?.gating_decision.reason_codes,
     bodyA.compare?.baseline.reason_codes
   );
+  assert.equal(EvidenceReplayResponseV0Schema.safeParse(bodyA).success, true);
   assertNoLeakPatterns(JSON.stringify(bodyA));
 
   const replayB = await makeReplayRequest();
