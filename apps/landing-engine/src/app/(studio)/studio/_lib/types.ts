@@ -105,3 +105,51 @@ export type RunLogDiff = {
 };
 
 export type LoadSpecSource = "default" | "example";
+
+export type EvidenceReplaySource = "draft" | "selected_run";
+
+export type EvidenceReplayOptionsDraft = {
+  strict: boolean;
+  persist_stub: boolean;
+  source: EvidenceReplaySource;
+};
+
+export type EvidenceReplayError = {
+  code: string;
+  message: string;
+  status?: number;
+};
+
+export type EvidenceReplayResult = {
+  replay: {
+    run_id: string;
+    gating_decision: {
+      status: "pass" | "soft_fail" | "hard_fail";
+      core_percent: number;
+      reason_codes: string[];
+    };
+    decision_trace: DecisionTraceEntry[];
+  };
+  compare: {
+    baseline: {
+      status: "pass" | "soft_fail" | "hard_fail";
+      core_percent: number;
+      reason_codes: string[];
+    };
+    match: boolean;
+    diff: {
+      status_changed: boolean;
+      core_percent_delta: number;
+      reason_codes: {
+        added: string[];
+        removed: string[];
+      };
+      integrity_warnings: string[];
+    };
+  };
+  persisted?: {
+    run_id: string;
+    is_stub: true;
+    source: "portable_replay";
+  };
+};

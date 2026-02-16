@@ -124,6 +124,10 @@ export default function StudioPage() {
               bundleImportOk={radiography.bundleImportOk}
               bundleDraft={radiography.bundleDraft}
               bundleDraftError={radiography.bundleDraftError}
+              replayRunning={radiography.replayRunning}
+              replayError={radiography.replayError}
+              replayResult={radiography.replayResult}
+              replayOptionsDraft={radiography.replayOptionsDraft}
               runLogOpsMessage={radiography.runLogOpsMessage}
               onExportRadiography={radiography.handleExportRadiography}
               onExportEvidenceBundle={radiography.exportEvidenceBundle}
@@ -131,6 +135,8 @@ export default function StudioPage() {
               onSetBundleDraftFromText={radiography.setBundleDraftFromText}
               onSetBundleDraftFromUnknown={radiography.setBundleDraftFromUnknown}
               onClearBundleDraft={radiography.clearBundleDraft}
+              onSetReplayOptionsDraft={radiography.setReplayOptionsDraft}
+              onReplayEvidenceBundle={radiography.replayEvidenceBundle}
               onOpenLatestRunLog={radiography.handleOpenLatestRunLog}
               onDownloadLatestRunLog={radiography.handleDownloadLatestRunLog}
               onRefreshRunLogs={radiography.handleRefreshRunLogs}

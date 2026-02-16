@@ -5,6 +5,9 @@ import {
   type ReasonCodeV0
 } from "@bax/radiography-contract";
 import type {
+  EvidenceReplayError,
+  EvidenceReplayOptionsDraft,
+  EvidenceReplayResult,
   EvidenceBundleDraft,
   EvidenceIndex,
   RadiographyInputsState,
@@ -55,6 +58,10 @@ export type RadiographyViewController = {
   bundleImportOk: string | null;
   bundleDraft: EvidenceBundleDraft | null;
   bundleDraftError: string | null;
+  replayRunning: boolean;
+  replayError: EvidenceReplayError | null;
+  replayResult: EvidenceReplayResult | null;
+  replayOptionsDraft: EvidenceReplayOptionsDraft;
   runLogOpsMessage: string | null;
   handleExportRadiography: () => void;
   exportEvidenceBundle: (runId: string) => Promise<void>;
@@ -62,6 +69,10 @@ export type RadiographyViewController = {
   setBundleDraftFromText: (jsonText: string) => void;
   setBundleDraftFromUnknown: (value: unknown) => void;
   clearBundleDraft: () => void;
+  setReplayOptionsDraft: (value: EvidenceReplayOptionsDraft) => void;
+  replayEvidenceBundle: (
+    options?: Partial<EvidenceReplayOptionsDraft>
+  ) => Promise<void>;
   handleOpenLatestRunLog: () => Promise<void>;
   handleDownloadLatestRunLog: () => Promise<void>;
   handleRefreshRunLogs: () => Promise<void>;
@@ -346,6 +357,195 @@ const sanitizeImportErrorMessage = (status: number): string => {
   return "Server error. Check logs.";
 };
 
+const REPLAY_DECISION_TRACE_SEVERITY_ORDER = {
+  blocker: 0,
+  warn: 1,
+  info: 2
+} as const;
+
+const toSortedStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+    .sort((a, b) => a.localeCompare(b));
+};
+
+const parseReplayGatingDecision = (value: unknown): EvidenceReplayResult["replay"]["gating_decision"] | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const maybe = value as Record<string, unknown>;
+  if (
+    maybe.status !== "pass" &&
+    maybe.status !== "soft_fail" &&
+    maybe.status !== "hard_fail"
+  ) {
+    return null;
+  }
+
+  if (typeof maybe.core_percent !== "number" || !Number.isFinite(maybe.core_percent)) {
+    return null;
+  }
+
+  return {
+    status: maybe.status,
+    core_percent: Math.max(0, Math.min(100, maybe.core_percent)),
+    reason_codes: toSortedStringArray(maybe.reason_codes)
+  };
+};
+
+const parseReplayDecisionTrace = (value: unknown): EvidenceReplayResult["replay"]["decision_trace"] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const parsed: EvidenceReplayResult["replay"]["decision_trace"] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+
+    const traceItem = item as Record<string, unknown>;
+    const severity =
+      traceItem.severity === "info" ||
+      traceItem.severity === "warn" ||
+      traceItem.severity === "blocker"
+        ? traceItem.severity
+        : null;
+
+    if (!severity || typeof traceItem.code !== "string" || typeof traceItem.message !== "string") {
+      continue;
+    }
+
+    parsed.push({
+      code: traceItem.code,
+      severity,
+      message: traceItem.message,
+      evidence_refs: toSortedStringArray(traceItem.evidence_refs)
+    });
+  }
+
+  return parsed.sort((a, b) => {
+    const severityDelta =
+      REPLAY_DECISION_TRACE_SEVERITY_ORDER[a.severity] -
+      REPLAY_DECISION_TRACE_SEVERITY_ORDER[b.severity];
+    if (severityDelta !== 0) {
+      return severityDelta;
+    }
+    return a.code.localeCompare(b.code);
+  });
+};
+
+const parseReplayResultResponse = (body: unknown): EvidenceReplayResult | null => {
+  if (!body || typeof body !== "object") {
+    return null;
+  }
+
+  const maybe = body as Record<string, unknown>;
+  if (maybe.ok !== true) {
+    return null;
+  }
+
+  if (!maybe.replay || typeof maybe.replay !== "object") {
+    return null;
+  }
+
+  if (!maybe.compare || typeof maybe.compare !== "object") {
+    return null;
+  }
+
+  const replay = maybe.replay as Record<string, unknown>;
+  const compare = maybe.compare as Record<string, unknown>;
+  const replayGating = parseReplayGatingDecision(replay.gating_decision);
+  const baselineGating = parseReplayGatingDecision(compare.baseline);
+
+  if (
+    typeof replay.run_id !== "string" ||
+    !replayGating ||
+    !baselineGating ||
+    typeof compare.match !== "boolean" ||
+    !compare.diff ||
+    typeof compare.diff !== "object"
+  ) {
+    return null;
+  }
+
+  const diff = compare.diff as Record<string, unknown>;
+  if (
+    typeof diff.status_changed !== "boolean" ||
+    typeof diff.core_percent_delta !== "number" ||
+    !Number.isFinite(diff.core_percent_delta) ||
+    !diff.reason_codes ||
+    typeof diff.reason_codes !== "object"
+  ) {
+    return null;
+  }
+
+  const reasonCodes = diff.reason_codes as Record<string, unknown>;
+  const parsed: EvidenceReplayResult = {
+    replay: {
+      run_id: replay.run_id,
+      gating_decision: replayGating,
+      decision_trace: parseReplayDecisionTrace(replay.decision_trace)
+    },
+    compare: {
+      baseline: baselineGating,
+      match: compare.match,
+      diff: {
+        status_changed: diff.status_changed,
+        core_percent_delta: diff.core_percent_delta,
+        reason_codes: {
+          added: toSortedStringArray(reasonCodes.added),
+          removed: toSortedStringArray(reasonCodes.removed)
+        },
+        integrity_warnings: toSortedStringArray(diff.integrity_warnings)
+      }
+    }
+  };
+
+  if (maybe.persisted && typeof maybe.persisted === "object") {
+    const persisted = maybe.persisted as Record<string, unknown>;
+    if (
+      typeof persisted.run_id === "string" &&
+      persisted.is_stub === true &&
+      persisted.source === "portable_replay"
+    ) {
+      parsed.persisted = {
+        run_id: persisted.run_id,
+        is_stub: true,
+        source: "portable_replay"
+      };
+    }
+  }
+
+  return parsed;
+};
+
+const sanitizeReplayErrorMessage = (status: number): string => {
+  if (status === 400) {
+    return "Invalid replay request.";
+  }
+  if (status === 409) {
+    return "Stub already exists for this run_id.";
+  }
+  if (status === 413) {
+    return "Bundle too large.";
+  }
+  if (status === 422) {
+    return "Integrity mismatch. Bundle appears tampered.";
+  }
+  if (status >= 500) {
+    return "Server error.";
+  }
+  return "Replay failed.";
+};
+
 const parseRunLogDiffResponse = (body: unknown): RunLogDiff | null => {
   if (!body || typeof body !== "object") {
     return null;
@@ -393,6 +593,14 @@ export const useRadiographyView = ({
   const [bundleImportOk, setBundleImportOk] = useState<string | null>(null);
   const [bundleDraft, setBundleDraft] = useState<EvidenceBundleDraft | null>(null);
   const [bundleDraftError, setBundleDraftError] = useState<string | null>(null);
+  const [replayRunning, setReplayRunning] = useState(false);
+  const [replayError, setReplayError] = useState<EvidenceReplayError | null>(null);
+  const [replayResult, setReplayResult] = useState<EvidenceReplayResult | null>(null);
+  const [replayOptionsDraft, setReplayOptionsDraft] = useState<EvidenceReplayOptionsDraft>({
+    strict: true,
+    persist_stub: false,
+    source: "draft"
+  });
   const [runLogOpsMessage, setRunLogOpsMessage] = useState<string | null>(null);
 
   const hasValidSpec = validation.ok && validation.spec.capabilities.length > 0;
@@ -625,12 +833,14 @@ export const useRadiographyView = ({
     if (!parsed) {
       setBundleDraft(null);
       setBundleDraftError("Bundle JSON is invalid or missing required fields.");
+      setReplayResult(null);
       return;
     }
 
     setBundleDraft(parsed);
     setBundleDraftError(null);
     setBundleImportError(null);
+    setReplayError(null);
   }, []);
 
   const setBundleDraftFromText = useCallback((jsonText: string) => {
@@ -639,6 +849,8 @@ export const useRadiographyView = ({
       setBundleDraft(null);
       setBundleDraftError(null);
       setBundleImportError(null);
+      setReplayResult(null);
+      setReplayError(null);
       return;
     }
 
@@ -648,6 +860,7 @@ export const useRadiographyView = ({
     } catch {
       setBundleDraft(null);
       setBundleDraftError("Bundle JSON is not valid.");
+      setReplayResult(null);
     }
   }, [setBundleDraftFromUnknown]);
 
@@ -656,6 +869,154 @@ export const useRadiographyView = ({
     setBundleDraftError(null);
     setBundleImportError(null);
     setBundleImportOk(null);
+    setReplayResult(null);
+    setReplayError(null);
+  }, []);
+
+  const fetchBundleByRunId = useCallback(async (runId: string): Promise<EvidenceBundleDraft> => {
+    const response = await fetch(
+      `/api/radiography/runlog/evidence/${encodeURIComponent(runId)}/bundle`,
+      { cache: "no-store" }
+    );
+
+    const body = (await response.json()) as unknown;
+    const parsed = parseEvidenceBundleDraft(body);
+    if (!response.ok || !parsed) {
+      const error = new Error("bundle_fetch_failed") as Error & { status?: number };
+      error.status = response.status;
+      throw error;
+    }
+
+    return parsed;
+  }, []);
+
+  const replayEvidenceBundle = useCallback(async (
+    options?: Partial<EvidenceReplayOptionsDraft>
+  ) => {
+    const effectiveOptions: EvidenceReplayOptionsDraft = {
+      ...replayOptionsDraft,
+      ...options
+    };
+
+    setReplayRunning(true);
+    setReplayError(null);
+    setReplayResult(null);
+
+    try {
+      let bundleForReplay: EvidenceBundleDraft | null = null;
+
+      if (effectiveOptions.source === "draft") {
+        if (!bundleDraft) {
+          const error = new Error("missing_bundle_draft") as Error & { status?: number };
+          error.status = 400;
+          throw error;
+        }
+        bundleForReplay = bundleDraft;
+      } else {
+        if (!selectedRunId) {
+          const error = new Error("missing_selected_run") as Error & { status?: number };
+          error.status = 400;
+          throw error;
+        }
+        bundleForReplay = await fetchBundleByRunId(selectedRunId);
+      }
+
+      const response = await fetch("/api/radiography/runlog/evidence/replay", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        cache: "no-store",
+        body: JSON.stringify({
+          bundle: bundleForReplay,
+          options: {
+            strict: effectiveOptions.strict,
+            persist_stub: effectiveOptions.persist_stub
+          }
+        })
+      });
+
+      const responseBody = (await response.json()) as unknown;
+      const parsedResult = parseReplayResultResponse(responseBody);
+      if (!response.ok || !parsedResult) {
+        const safeStatus = response.status;
+        let errorCode = "replay_failed";
+        if (responseBody && typeof responseBody === "object") {
+          const maybeCode = (responseBody as { error?: unknown }).error;
+          if (typeof maybeCode === "string" && maybeCode.length > 0) {
+            errorCode = maybeCode;
+          }
+        }
+        const error = new Error(errorCode) as Error & { status?: number; code?: string };
+        error.status = safeStatus;
+        error.code = errorCode;
+        throw error;
+      }
+
+      setReplayResult(parsedResult);
+      setReplayError(null);
+
+      if (effectiveOptions.persist_stub) {
+        const persistedRunId = parsedResult.persisted?.run_id ?? parsedResult.replay.run_id;
+        if (persistedRunId) {
+          await fetchRunLogList();
+          setSelectedRunId(persistedRunId);
+          const selected = await readRunLogById(persistedRunId);
+          if (selected.runlog) {
+            setSelectedRunLog(selected.runlog);
+            setRunLogDiff(null);
+            await fetchEvidenceByRunId(persistedRunId);
+          } else {
+            setSelectedRunLog(null);
+            setSelectedRunEvidence(null);
+            setSelectedRunEvidenceError(null);
+          }
+        }
+      }
+    } catch (error) {
+      const status =
+        error && typeof error === "object" && "status" in error && typeof error.status === "number"
+          ? error.status
+          : undefined;
+      const code =
+        error && typeof error === "object" && "code" in error && typeof error.code === "string"
+          ? error.code
+          : error instanceof Error
+            ? error.message
+            : "replay_failed";
+
+      let message = status ? sanitizeReplayErrorMessage(status) : "Server error.";
+      if (code === "missing_bundle_draft") {
+        message = "Select a valid bundle draft before replay.";
+      } else if (code === "missing_selected_run") {
+        message = "Select a run before replay.";
+      } else if (code === "bundle_fetch_failed" && status === 404) {
+        message = "No evidence bundle found for selected run.";
+      } else if (code === "run_already_exists") {
+        message = "Stub already exists for this run_id.";
+      }
+
+      setReplayError({
+        code,
+        message,
+        status
+      });
+      setReplayResult(null);
+    } finally {
+      setReplayRunning(false);
+    }
+  }, [
+    bundleDraft,
+    fetchBundleByRunId,
+    fetchEvidenceByRunId,
+    fetchRunLogList,
+    readRunLogById,
+    replayOptionsDraft,
+    selectedRunId
+  ]);
+
+  const updateReplayOptionsDraft = useCallback((value: EvidenceReplayOptionsDraft) => {
+    setReplayOptionsDraft(value);
   }, []);
 
   useEffect(() => {
@@ -1107,6 +1468,10 @@ export const useRadiographyView = ({
     bundleImportOk,
     bundleDraft,
     bundleDraftError,
+    replayRunning,
+    replayError,
+    replayResult,
+    replayOptionsDraft,
     runLogOpsMessage,
     handleExportRadiography,
     exportEvidenceBundle,
@@ -1114,6 +1479,8 @@ export const useRadiographyView = ({
     setBundleDraftFromText,
     setBundleDraftFromUnknown,
     clearBundleDraft,
+    setReplayOptionsDraft: updateReplayOptionsDraft,
+    replayEvidenceBundle,
     handleOpenLatestRunLog,
     handleDownloadLatestRunLog,
     handleRefreshRunLogs,
