@@ -7,7 +7,8 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 import {
   EvidenceReplayErrorResponseV0Schema,
-  EvidenceReplayResponseV0Schema
+  EvidenceReplayResponseV0Schema,
+  RunlogErrorResponseV0Schema
 } from "@bax/radiography-contract";
 
 type RunLogFixtureInput = {
@@ -264,6 +265,7 @@ test("runlog POST invalid JSON returns 400 with request_id correlation", async (
   assert.equal(body.error, "invalid");
   assert.ok((body.errors?.length ?? 0) > 0);
   assertRequestIdCorrelation(response, body);
+  assert.equal(RunlogErrorResponseV0Schema.safeParse(body).success, true);
   assertNoLeakPatterns(JSON.stringify(body));
 });
 
@@ -292,6 +294,7 @@ test("runlog prune invalid JSON returns 400 with request_id correlation", async 
   assert.equal(body.ok, false);
   assert.equal(body.error, "invalid");
   assertRequestIdCorrelation(response, body);
+  assert.equal(RunlogErrorResponseV0Schema.safeParse(body).success, true);
   assertNoLeakPatterns(JSON.stringify(body));
 });
 
@@ -678,6 +681,7 @@ test("evidence artifact endpoint detects integrity mismatch", async () => {
   assert.equal(body.ok, false);
   assert.equal(body.error, "integrity_mismatch");
   assertRequestIdCorrelation(response, body);
+  assert.equal(RunlogErrorResponseV0Schema.safeParse(body).success, true);
   assertNoLeakPatterns(JSON.stringify(body));
 });
 
@@ -732,9 +736,16 @@ test("evidence artifact endpoint rejects non-json artifact with artifact_not_jso
   );
 
   assert.equal(response.status, 422);
-  const body = (await response.json()) as { ok?: boolean; error?: string };
+  const body = (await response.json()) as {
+    ok?: boolean;
+    error?: string;
+    request_id?: string;
+  };
   assert.equal(body.ok, false);
   assert.equal(body.error, "artifact_not_json");
+  assertRequestIdCorrelation(response, body);
+  assert.equal(RunlogErrorResponseV0Schema.safeParse(body).success, true);
+  assertNoLeakPatterns(JSON.stringify(body));
 });
 
 test("evidence bundle export is deterministic and includes expected artifact ids without leaks", async () => {
@@ -844,10 +855,17 @@ test("evidence bundle export fails on integrity mismatch when artifact is tamper
     { params: Promise.resolve({ run_id: runId }) }
   );
   assert.equal(response.status, 409);
-  const body = (await response.json()) as { ok?: boolean; error?: string; artifact_id?: string };
+  const body = (await response.json()) as {
+    ok?: boolean;
+    error?: string;
+    request_id?: string;
+    artifact_id?: string;
+  };
   assert.equal(body.ok, false);
   assert.equal(body.error, "integrity_mismatch");
   assert.equal(body.artifact_id, artifactId);
+  assertRequestIdCorrelation(response, body);
+  assertNoLeakPatterns(JSON.stringify(body));
 });
 
 test("evidence bundle import supports round-trip with index/artifact/bundle retrieval", async () => {
@@ -1072,9 +1090,13 @@ test("evidence bundle import returns 409 when run_id already exists (full runlog
   const fullImportBody = (await fullImportResponse.json()) as {
     ok?: boolean;
     error?: string;
+    request_id?: string;
   };
   assert.equal(fullImportBody.ok, false);
   assert.equal(fullImportBody.error, "run_already_exists");
+  assertRequestIdCorrelation(fullImportResponse, fullImportBody);
+  assert.equal(RunlogErrorResponseV0Schema.safeParse(fullImportBody).success, true);
+  assertNoLeakPatterns(JSON.stringify(fullImportBody));
 
   const sourceRunId = "run-collision-source";
   const sourcePost = await runlogRoute.POST(
@@ -1127,9 +1149,13 @@ test("evidence bundle import returns 409 when run_id already exists (full runlog
   const secondStubBody = (await secondStubImportResponse.json()) as {
     ok?: boolean;
     error?: string;
+    request_id?: string;
   };
   assert.equal(secondStubBody.ok, false);
   assert.equal(secondStubBody.error, "run_already_exists");
+  assertRequestIdCorrelation(secondStubImportResponse, secondStubBody);
+  assert.equal(RunlogErrorResponseV0Schema.safeParse(secondStubBody).success, true);
+  assertNoLeakPatterns(JSON.stringify(secondStubBody));
 });
 
 test("imported runlog stub defaults gating when gating artifact is missing", async () => {
@@ -1268,9 +1294,16 @@ test("evidence bundle import rejects traversal, oversized payload, and non-json 
     })
   );
   assert.equal(traversalResponse.status, 400);
-  const traversalBody = (await traversalResponse.json()) as { ok?: boolean; error?: string };
+  const traversalBody = (await traversalResponse.json()) as {
+    ok?: boolean;
+    error?: string;
+    request_id?: string;
+  };
   assert.equal(traversalBody.ok, false);
   assert.equal(traversalBody.error, "invalid");
+  assertRequestIdCorrelation(traversalResponse, traversalBody);
+  assert.equal(RunlogErrorResponseV0Schema.safeParse(traversalBody).success, true);
+  assertNoLeakPatterns(JSON.stringify(traversalBody));
 
   const oversizedContent = { payload: "x".repeat(600_000) };
   const oversizedText = `${JSON.stringify(oversizedContent, null, 2)}\n`;
@@ -1314,9 +1347,16 @@ test("evidence bundle import rejects traversal, oversized payload, and non-json 
     })
   );
   assert.equal(oversizedResponse.status, 413);
-  const oversizedBody = (await oversizedResponse.json()) as { ok?: boolean; error?: string };
+  const oversizedBody = (await oversizedResponse.json()) as {
+    ok?: boolean;
+    error?: string;
+    request_id?: string;
+  };
   assert.equal(oversizedBody.ok, false);
   assert.equal(oversizedBody.error, "bundle_too_large");
+  assertRequestIdCorrelation(oversizedResponse, oversizedBody);
+  assert.equal(RunlogErrorResponseV0Schema.safeParse(oversizedBody).success, true);
+  assertNoLeakPatterns(JSON.stringify(oversizedBody));
 
   const nonJsonArtifactId = "gating-nonjson0";
   const nonJsonResponse = await importRoute.POST(
@@ -1356,9 +1396,15 @@ test("evidence bundle import rejects traversal, oversized payload, and non-json 
     })
   );
   assert.equal(nonJsonResponse.status, 422);
-  const nonJsonBody = (await nonJsonResponse.json()) as { ok?: boolean; error?: string };
+  const nonJsonBody = (await nonJsonResponse.json()) as {
+    ok?: boolean;
+    error?: string;
+    request_id?: string;
+  };
   assert.equal(nonJsonBody.ok, false);
   assert.equal(nonJsonBody.error, "artifact_not_json");
+  assertRequestIdCorrelation(nonJsonResponse, nonJsonBody);
+  assertNoLeakPatterns(JSON.stringify(nonJsonBody));
 });
 
 test("evidence replay returns deterministic output with match=true for untampered bundle", async () => {
@@ -1486,6 +1532,7 @@ test("evidence replay invalid JSON returns 400 with request_id correlation", asy
   assert.match(body.request_id ?? "", REQUEST_ID_HEADER_PATTERN);
   assert.equal(body.request_id, responseRequestIdHeader);
   assert.equal(EvidenceReplayErrorResponseV0Schema.safeParse(body).success, true);
+  assert.equal(RunlogErrorResponseV0Schema.safeParse(body).success, true);
   assertNoLeakPatterns(JSON.stringify(body));
 });
 
@@ -1573,6 +1620,7 @@ test("evidence replay returns leak-safe contract_violation details on internal s
     assert.match(replayBody.request_id ?? "", REQUEST_ID_HEADER_PATTERN);
     assert.equal(replayErrorRequestIdHeader, replayBody.request_id);
     assert.equal(EvidenceReplayErrorResponseV0Schema.safeParse(replayBody).success, true);
+    assert.equal(RunlogErrorResponseV0Schema.safeParse(replayBody).success, true);
     assert.equal(replayBody.details?.code, "contract_violation");
     assert.equal(replayBody.details?.issues_count, 5);
     assert.deepEqual(replayBody.details?.issues_paths, ["compare", "replay", "root"]);
@@ -1677,6 +1725,7 @@ test("evidence replay strict mode fails with 409 integrity_mismatch when bundle 
   assert.match(replayBody.request_id ?? "", REQUEST_ID_HEADER_PATTERN);
   assert.equal(replayBody.request_id, replayErrorRequestIdHeader);
   assert.equal(EvidenceReplayErrorResponseV0Schema.safeParse(replayBody).success, true);
+  assert.equal(RunlogErrorResponseV0Schema.safeParse(replayBody).success, true);
   assert.equal(typeof replayBody.details?.code, "string");
   assertNoLeakPatterns(JSON.stringify(replayBody));
 });
@@ -1706,6 +1755,7 @@ test("runlog by id returns 404 not_found with unified error shape", async () => 
   assert.equal(body.ok, false);
   assert.equal(body.error, "not_found");
   assertRequestIdCorrelation(response, body);
+  assert.equal(RunlogErrorResponseV0Schema.safeParse(body).success, true);
   assertNoLeakPatterns(JSON.stringify(body));
 });
 
@@ -1734,6 +1784,7 @@ test("runlog by id returns 400 invalid with unified error shape", async () => {
   assert.equal(body.ok, false);
   assert.equal(body.error, "invalid");
   assertRequestIdCorrelation(response, body);
+  assert.equal(RunlogErrorResponseV0Schema.safeParse(body).success, true);
   assertNoLeakPatterns(JSON.stringify(body));
 });
 
@@ -1953,8 +2004,14 @@ test("evidence replay persist_stub writes portable_replay stub and returns 409 o
     })
   );
   assert.equal(collisionResponse.status, 409);
-  const collisionBody = (await collisionResponse.json()) as { ok?: boolean; error?: string };
+  const collisionBody = (await collisionResponse.json()) as {
+    ok?: boolean;
+    error?: string;
+    request_id?: string;
+  };
   assert.equal(collisionBody.ok, false);
   assert.equal(collisionBody.error, "run_already_exists");
+  assertRequestIdCorrelation(collisionResponse, collisionBody);
+  assert.equal(RunlogErrorResponseV0Schema.safeParse(collisionBody).success, true);
   assertNoLeakPatterns(JSON.stringify(collisionBody));
 });
