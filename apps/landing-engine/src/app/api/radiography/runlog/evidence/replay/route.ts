@@ -105,6 +105,28 @@ const withRequestId = (response: NextResponse, requestId: string) => {
   return response;
 };
 
+const buildErrorResponse = (params: {
+  request_id: string;
+  status: number;
+  payload: {
+    ok: false;
+    error: string;
+    request_id?: string;
+    errors?: string[];
+    details?: unknown;
+  };
+}) => {
+  const payloadWithRequestId = {
+    ...params.payload,
+    request_id: params.request_id
+  };
+
+  return withRequestId(
+    NextResponse.json(payloadWithRequestId, { status: params.status }),
+    params.request_id
+  );
+};
+
 const buildInternalErrorResponse = (params: {
   request_id: string;
   code: "contract_violation" | "internal_error";
@@ -134,18 +156,15 @@ const buildInternalErrorResponse = (params: {
 
   console.error("radiography_replay_error", logPayload);
 
-  return withRequestId(
-    NextResponse.json(
-      {
-        ok: false,
-        error: "internal_error",
-        request_id: params.request_id,
-        details
-      },
-      { status: 500 }
-    ),
-    params.request_id
-  );
+  return buildErrorResponse({
+    request_id: params.request_id,
+    status: 500,
+    payload: {
+      ok: false,
+      error: "internal_error",
+      details
+    }
+  });
 };
 
 export async function POST(request: Request) {
@@ -156,24 +175,28 @@ export async function POST(request: Request) {
     try {
       body = await request.json();
     } catch {
-      return withRequestId(
-        NextResponse.json(
-          { ok: false, error: "invalid", errors: ["body: request body must be valid JSON"] },
-          { status: 400 }
-        ),
-        request_id
-      );
+      return buildErrorResponse({
+        request_id,
+        status: 400,
+        payload: {
+          ok: false,
+          error: "invalid",
+          errors: ["body: request body must be valid JSON"]
+        }
+      });
     }
 
     const parsedBody = ReplayBodySchema.safeParse(body);
     if (!parsedBody.success) {
-      return withRequestId(
-        NextResponse.json(
-          { ok: false, error: "invalid", errors: formatIssues(parsedBody.error.issues) },
-          { status: 400 }
-        ),
-        request_id
-      );
+      return buildErrorResponse({
+        request_id,
+        status: 400,
+        payload: {
+          ok: false,
+          error: "invalid",
+          errors: formatIssues(parsedBody.error.issues)
+        }
+      });
     }
 
     const strict = parsedBody.data.options?.strict ?? true;
@@ -194,17 +217,15 @@ export async function POST(request: Request) {
             ? 409
             : 400;
 
-      return withRequestId(
-        NextResponse.json(
-          {
-            ok: false,
-            error: replayResult.error,
-            details: replayResult.details
-          },
-          { status }
-        ),
-        request_id
-      );
+      return buildErrorResponse({
+        request_id,
+        status,
+        payload: {
+          ok: false,
+          error: replayResult.error,
+          details: replayResult.details
+        }
+      });
     }
 
     let persisted:
@@ -218,19 +239,24 @@ export async function POST(request: Request) {
     if (persist_stub) {
       const existingRun = await readRunLogById(replayResult.result.run_id);
       if (existingRun.ok) {
-        return withRequestId(
-          NextResponse.json(
-            { ok: false, error: "run_already_exists" },
-            { status: 409 }
-          ),
-          request_id
-        );
+        return buildErrorResponse({
+          request_id,
+          status: 409,
+          payload: {
+            ok: false,
+            error: "run_already_exists"
+          }
+        });
       }
       if (existingRun.reason !== "not_found") {
-        return withRequestId(
-          NextResponse.json({ ok: false, error: "invalid" }, { status: 400 }),
-          request_id
-        );
+        return buildErrorResponse({
+          request_id,
+          status: 400,
+          payload: {
+            ok: false,
+            error: "invalid"
+          }
+        });
       }
 
       await writeRunLog(replayResult.result.runlog_stub);

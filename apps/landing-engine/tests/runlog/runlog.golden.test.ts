@@ -1384,6 +1384,33 @@ test("evidence replay returns deterministic output with match=true for untampere
   assert.deepEqual(bodyB, bodyA);
 });
 
+test("evidence replay invalid JSON returns 400 with request_id correlation", async () => {
+  const replayRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/evidence/replay/route.ts"
+  );
+
+  const response = await replayRoute.POST(
+    new Request("http://localhost/api/radiography/runlog/evidence/replay", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{"
+    })
+  );
+
+  assert.equal(response.status, 400);
+  const responseRequestIdHeader = assertRequestIdHeader(response);
+  const body = (await response.json()) as {
+    ok?: boolean;
+    error?: string;
+    request_id?: string;
+  };
+  assert.equal(body.ok, false);
+  assert.equal(body.error, "invalid");
+  assert.match(body.request_id ?? "", REQUEST_ID_HEADER_PATTERN);
+  assert.equal(body.request_id, responseRequestIdHeader);
+  assertNoLeakPatterns(JSON.stringify(body));
+});
+
 test("evidence replay returns leak-safe contract_violation details on internal schema mismatch", async () => {
   await resetRunlogDir();
   await resetEvidenceDir();
@@ -1559,13 +1586,17 @@ test("evidence replay strict mode fails with 409 integrity_mismatch when bundle 
     })
   );
   assert.equal(replayResponse.status, 409);
+  const replayErrorRequestIdHeader = assertRequestIdHeader(replayResponse);
   const replayBody = (await replayResponse.json()) as {
     ok?: boolean;
     error?: string;
+    request_id?: string;
     details?: { code?: string; artifact_id?: string };
   };
   assert.equal(replayBody.ok, false);
   assert.equal(replayBody.error, "integrity_mismatch");
+  assert.match(replayBody.request_id ?? "", REQUEST_ID_HEADER_PATTERN);
+  assert.equal(replayBody.request_id, replayErrorRequestIdHeader);
   assert.equal(typeof replayBody.details?.code, "string");
   assertNoLeakPatterns(JSON.stringify(replayBody));
 });
