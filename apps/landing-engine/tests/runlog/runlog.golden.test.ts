@@ -208,6 +208,169 @@ test("assertRunlogErrorEnvelope throws contract_violation with leak-safe logging
   }
 });
 
+test("normalizeRunlogResponse handles runlog 404 with correlated request ids", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const runlogByIdRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/[run_id]/route.ts");
+  const runlogClient = await importFresh<{
+    extractRequestIds: (response: Response, body: unknown) => {
+      header?: string;
+      body?: string;
+      correlated: boolean;
+    };
+    normalizeRunlogResponse: <T>(
+      response: Response,
+      body: unknown,
+      opts?: { mode?: "runlog" | "replay" }
+    ) => { ok: true; data: T } | {
+      ok: false;
+      status: number;
+      error: string;
+      request_id?: string;
+      x_request_id?: string;
+      errors?: string[];
+      details?: unknown;
+    };
+  }>("src/lib/radiography/runlogClient.ts");
+
+  const response = await runlogByIdRoute.GET(
+    new Request("http://localhost/api/radiography/runlog/missing-normalized"),
+    { params: Promise.resolve({ run_id: "missing-normalized" }) }
+  );
+  const body = (await response.json()) as unknown;
+  const ids = runlogClient.extractRequestIds(response, body);
+  const normalized = runlogClient.normalizeRunlogResponse<Record<string, unknown>>(response, body, {
+    mode: "runlog"
+  });
+
+  assert.equal(ids.correlated, true);
+  if (normalized.ok) {
+    assert.fail("Expected normalized error for 404 response");
+  }
+  assert.equal(normalized.status, 404);
+  assert.equal(normalized.error, "not_found");
+  assert.equal(typeof normalized.x_request_id, "string");
+  assert.equal(typeof normalized.request_id, "string");
+  assert.equal(normalized.request_id, normalized.x_request_id);
+  assertNoLeakPatterns(JSON.stringify(normalized));
+});
+
+test("normalizeRunlogResponse handles replay 400 with correlated request ids", async () => {
+  const replayRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/evidence/replay/route.ts"
+  );
+  const runlogClient = await importFresh<{
+    extractRequestIds: (response: Response, body: unknown) => {
+      header?: string;
+      body?: string;
+      correlated: boolean;
+    };
+    normalizeRunlogResponse: <T>(
+      response: Response,
+      body: unknown,
+      opts?: { mode?: "runlog" | "replay" }
+    ) => { ok: true; data: T } | {
+      ok: false;
+      status: number;
+      error: string;
+      request_id?: string;
+      x_request_id?: string;
+      errors?: string[];
+      details?: unknown;
+    };
+  }>("src/lib/radiography/runlogClient.ts");
+
+  const response = await replayRoute.POST(
+    new Request("http://localhost/api/radiography/runlog/evidence/replay", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{"
+    })
+  );
+  const body = (await response.json()) as unknown;
+  const ids = runlogClient.extractRequestIds(response, body);
+  const normalized = runlogClient.normalizeRunlogResponse<Record<string, unknown>>(response, body, {
+    mode: "replay"
+  });
+
+  assert.equal(ids.correlated, true);
+  if (normalized.ok) {
+    assert.fail("Expected normalized error for replay 400 response");
+  }
+  assert.equal(normalized.status, 400);
+  assert.equal(normalized.error, "invalid");
+  assert.equal(typeof normalized.x_request_id, "string");
+  assert.equal(typeof normalized.request_id, "string");
+  assert.equal(normalized.request_id, normalized.x_request_id);
+  assertNoLeakPatterns(JSON.stringify(normalized));
+});
+
+test("extractRequestIds reports non-correlated ids on synthetic mismatch", async () => {
+  const runlogClient = await importFresh<{
+    extractRequestIds: (response: Response, body: unknown) => {
+      header?: string;
+      body?: string;
+      correlated: boolean;
+    };
+    normalizeRunlogResponse: <T>(
+      response: Response,
+      body: unknown,
+      opts?: { mode?: "runlog" | "replay" }
+    ) => { ok: true; data: T } | {
+      ok: false;
+      status: number;
+      error: string;
+      request_id?: string;
+      x_request_id?: string;
+      errors?: string[];
+      details?: unknown;
+    };
+  }>("src/lib/radiography/runlogClient.ts");
+
+  const response = new Response(
+    JSON.stringify({
+      ok: false,
+      error: "invalid",
+      request_id: "body-id"
+    }),
+    {
+      status: 400,
+      headers: {
+        "content-type": "application/json",
+        "x-request-id": "header-id"
+      }
+    }
+  );
+  const body = {
+    ok: false,
+    error: "invalid",
+    request_id: "body-id"
+  };
+
+  const ids = runlogClient.extractRequestIds(response, body);
+  assert.equal(ids.header, "header-id");
+  assert.equal(ids.body, "body-id");
+  assert.equal(ids.correlated, false);
+
+  const normalized = runlogClient.normalizeRunlogResponse<Record<string, unknown>>(response, body, {
+    mode: "runlog"
+  });
+  if (normalized.ok) {
+    assert.fail("Expected normalized error for synthetic mismatch response");
+  }
+  assert.equal(normalized.status, 400);
+  assert.equal(normalized.error, "invalid");
+  assert.equal(normalized.x_request_id, "header-id");
+  assert.equal(normalized.request_id, "body-id");
+  assertNoLeakPatterns(JSON.stringify(normalized));
+});
+
 test("runlogStorage.listRunLogs ignores invalid JSON and keeps deterministic order", async () => {
   await resetRunlogDir();
   await resetEvidenceDir();
