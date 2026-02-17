@@ -8,6 +8,11 @@ import {
   RUNLOG_RUN_ID_PATTERN
 } from "@/lib/radiography/runlogUtils";
 import { readRunLogById, writeRunLog } from "@/lib/radiography/runlogStorage";
+import {
+  buildErrorResponse,
+  getRequestId,
+  withRequestId
+} from "@/lib/radiography/requestId";
 
 export const runtime = "nodejs";
 
@@ -56,50 +61,65 @@ const formatIssues = (
 };
 
 export async function POST(request: Request) {
+  const requestId = getRequestId(request);
+
   let body: unknown;
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json(
-      { ok: false, error: "invalid", errors: ["body: request body must be valid JSON"] },
-      { status: 400 }
-    );
+    return buildErrorResponse({
+      requestId,
+      status: 400,
+      payload: {
+        ok: false,
+        error: "invalid",
+        errors: ["body: request body must be valid JSON"]
+      }
+    });
   }
 
   if (!isRecord(body) || !("seed_urls_override" in body)) {
-    return NextResponse.json(
-      { ok: false, error: "seed_urls_required" },
-      { status: 400 }
-    );
+    return buildErrorResponse({
+      requestId,
+      status: 400,
+      payload: { ok: false, error: "seed_urls_required" }
+    });
   }
 
   const parsedBody = ReplayBodySchema.safeParse(body);
   if (!parsedBody.success) {
-    return NextResponse.json(
-      { ok: false, error: "invalid", errors: formatIssues(parsedBody.error.issues) },
-      { status: 400 }
-    );
+    return buildErrorResponse({
+      requestId,
+      status: 400,
+      payload: { ok: false, error: "invalid", errors: formatIssues(parsedBody.error.issues) }
+    });
   }
 
   const source = await readRunLogById(parsedBody.data.run_id);
   if (!source.ok) {
-    return NextResponse.json(
-      { ok: false, error: source.reason },
-      { status: source.reason === "not_found" ? 404 : 400 }
-    );
+    return buildErrorResponse({
+      requestId,
+      status: source.reason === "not_found" ? 404 : 400,
+      payload: { ok: false, error: source.reason }
+    });
   }
 
   const buildSpec = BuildSpecV0Schema.safeParse(source.runlog.buildspec);
   if (!buildSpec.success) {
-    return NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
+    return buildErrorResponse({
+      requestId,
+      status: 400,
+      payload: { ok: false, error: "invalid" }
+    });
   }
 
   const normalizedSeedUrls = normalizeSeedUrls(parsedBody.data.seed_urls_override);
   if (normalizedSeedUrls.length === 0) {
-    return NextResponse.json(
-      { ok: false, error: "seed_urls_required" },
-      { status: 400 }
-    );
+    return buildErrorResponse({
+      requestId,
+      status: 400,
+      payload: { ok: false, error: "seed_urls_required" }
+    });
   }
 
   const output = runRadiographyV0(
@@ -132,10 +152,13 @@ export async function POST(request: Request) {
     await writeRunLog(replayedRunlog);
   }
 
-  return NextResponse.json({
-    ok: true,
-    replayed_from: source.runlog.run_id,
-    new_run_id: replayedRunlog.run_id,
-    runlog: replayedRunlog
-  });
+  return withRequestId(
+    NextResponse.json({
+      ok: true,
+      replayed_from: source.runlog.run_id,
+      new_run_id: replayedRunlog.run_id,
+      runlog: replayedRunlog
+    }),
+    requestId
+  );
 }

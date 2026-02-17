@@ -4,6 +4,11 @@ import {
   EvidenceBundleV0Schema,
   importEvidenceBundle
 } from "@/lib/radiography/runlogUtils";
+import {
+  buildErrorResponse,
+  getRequestId,
+  withRequestId
+} from "@/lib/radiography/requestId";
 
 export const runtime = "nodejs";
 
@@ -22,22 +27,30 @@ const ImportBodySchema = z
   .strict();
 
 export async function POST(request: Request) {
+  const requestId = getRequestId(request);
+
   let body: unknown;
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json(
-      { ok: false, error: "invalid", errors: ["body: request body must be valid JSON"] },
-      { status: 400 }
-    );
+    return buildErrorResponse({
+      requestId,
+      status: 400,
+      payload: {
+        ok: false,
+        error: "invalid",
+        errors: ["body: request body must be valid JSON"]
+      }
+    });
   }
 
   const parsedBody = ImportBodySchema.safeParse(body);
   if (!parsedBody.success) {
-    return NextResponse.json(
-      { ok: false, error: "invalid", errors: formatIssues(parsedBody.error.issues) },
-      { status: 400 }
-    );
+    return buildErrorResponse({
+      requestId,
+      status: 400,
+      payload: { ok: false, error: "invalid", errors: formatIssues(parsedBody.error.issues) }
+    });
   }
 
   const result = await importEvidenceBundle(parsedBody.data.bundle);
@@ -53,15 +66,16 @@ export async function POST(request: Request) {
               ? 422
               : 400;
 
-    return NextResponse.json(
-      {
+    return buildErrorResponse({
+      requestId,
+      status,
+      payload: {
         ok: false,
         error: result.error,
         artifact_id: result.artifact_id
-      },
-      { status }
-    );
+      }
+    });
   }
 
-  return NextResponse.json(result);
+  return withRequestId(NextResponse.json(result), requestId);
 }

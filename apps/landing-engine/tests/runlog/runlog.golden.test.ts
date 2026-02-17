@@ -131,6 +131,16 @@ const assertRequestIdHeader = (response: Response): string => {
   return requestId ?? "";
 };
 
+const assertRequestIdCorrelation = (
+  response: Response,
+  body: { request_id?: string }
+): string => {
+  const requestId = assertRequestIdHeader(response);
+  assert.match(body.request_id ?? "", REQUEST_ID_HEADER_PATTERN);
+  assert.equal(body.request_id, requestId);
+  return requestId;
+};
+
 test("runlogStorage.listRunLogs ignores invalid JSON and keeps deterministic order", async () => {
   await resetRunlogDir();
   await resetEvidenceDir();
@@ -225,6 +235,64 @@ test("runlog POST redacts forbidden keys before persistence", async () => {
   assert.equal(persistedText.includes("http"), false);
   assert.equal(persistedText.includes("seed_urls_raw"), false);
   assert.equal(persistedText.includes("\"path\""), false);
+});
+
+test("runlog POST invalid JSON returns 400 with request_id correlation", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const route = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/route.ts"
+  );
+
+  const response = await route.POST(
+    new Request("http://localhost/api/radiography/runlog", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{"
+    })
+  );
+
+  assert.equal(response.status, 400);
+  const body = (await response.json()) as {
+    ok?: boolean;
+    error?: string;
+    request_id?: string;
+    errors?: string[];
+  };
+  assert.equal(body.ok, false);
+  assert.equal(body.error, "invalid");
+  assert.ok((body.errors?.length ?? 0) > 0);
+  assertRequestIdCorrelation(response, body);
+  assertNoLeakPatterns(JSON.stringify(body));
+});
+
+test("runlog prune invalid JSON returns 400 with request_id correlation", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const route = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/prune/route.ts"
+  );
+
+  const response = await route.POST(
+    new Request("http://localhost/api/radiography/runlog/prune", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{"
+    })
+  );
+
+  assert.equal(response.status, 400);
+  const body = (await response.json()) as {
+    ok?: boolean;
+    error?: string;
+    request_id?: string;
+  };
+  assert.equal(body.ok, false);
+  assert.equal(body.error, "invalid");
+  assertRequestIdCorrelation(response, body);
+  assertNoLeakPatterns(JSON.stringify(body));
 });
 
 test("pruneRunLogs respects bounds and never touches files outside runlog directory", async () => {
@@ -602,9 +670,15 @@ test("evidence artifact endpoint detects integrity mismatch", async () => {
   );
 
   assert.equal(response.status, 409);
-  const body = (await response.json()) as { ok?: boolean; error?: string };
+  const body = (await response.json()) as {
+    ok?: boolean;
+    error?: string;
+    request_id?: string;
+  };
   assert.equal(body.ok, false);
   assert.equal(body.error, "integrity_mismatch");
+  assertRequestIdCorrelation(response, body);
+  assertNoLeakPatterns(JSON.stringify(body));
 });
 
 test("evidence artifact endpoint rejects non-json artifact with artifact_not_json", async () => {
@@ -1624,9 +1698,15 @@ test("runlog by id returns 404 not_found with unified error shape", async () => 
   );
 
   assert.equal(response.status, 404);
-  const body = (await response.json()) as { ok?: boolean; error?: string };
+  const body = (await response.json()) as {
+    ok?: boolean;
+    error?: string;
+    request_id?: string;
+  };
   assert.equal(body.ok, false);
   assert.equal(body.error, "not_found");
+  assertRequestIdCorrelation(response, body);
+  assertNoLeakPatterns(JSON.stringify(body));
 });
 
 test("runlog by id returns 400 invalid with unified error shape", async () => {
@@ -1646,9 +1726,15 @@ test("runlog by id returns 400 invalid with unified error shape", async () => {
   );
 
   assert.equal(response.status, 400);
-  const body = (await response.json()) as { ok?: boolean; error?: string };
+  const body = (await response.json()) as {
+    ok?: boolean;
+    error?: string;
+    request_id?: string;
+  };
   assert.equal(body.ok, false);
   assert.equal(body.error, "invalid");
+  assertRequestIdCorrelation(response, body);
+  assertNoLeakPatterns(JSON.stringify(body));
 });
 
 test("evidence replay no-strict mode succeeds with warnings and match=false", async () => {

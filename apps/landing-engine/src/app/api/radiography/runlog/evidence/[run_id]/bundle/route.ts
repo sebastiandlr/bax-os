@@ -1,8 +1,12 @@
-import { NextResponse } from "next/server";
 import {
   readEvidenceBundleByRunId,
   RUNLOG_RUN_ID_PATTERN
 } from "@/lib/radiography/runlogUtils";
+import {
+  buildErrorResponse,
+  getRequestId,
+  withRequestId
+} from "@/lib/radiography/requestId";
 
 export const runtime = "nodejs";
 
@@ -12,11 +16,17 @@ type RunLogEvidenceBundleRouteContext = {
   }>;
 };
 
-export async function GET(_request: Request, context: RunLogEvidenceBundleRouteContext) {
+export async function GET(request: Request, context: RunLogEvidenceBundleRouteContext) {
+  const requestId = getRequestId(request);
+
   try {
     const { run_id } = await context.params;
     if (!RUNLOG_RUN_ID_PATTERN.test(run_id)) {
-      return NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
+      return buildErrorResponse({
+        requestId,
+        status: 400,
+        payload: { ok: false, error: "invalid" }
+      });
     }
 
     const result = await readEvidenceBundleByRunId(run_id);
@@ -32,24 +42,29 @@ export async function GET(_request: Request, context: RunLogEvidenceBundleRouteC
                 ? 422
                 : 400;
 
-      return NextResponse.json(
-        {
+      return buildErrorResponse({
+        requestId,
+        status,
+        payload: {
           ok: false,
           error: result.error,
           artifact_id: result.artifact_id
-        },
-        { status }
-      );
+        }
+      });
     }
 
-    return new Response(`${JSON.stringify(result.bundle, null, 2)}\n`, {
+    return withRequestId(new Response(`${JSON.stringify(result.bundle, null, 2)}\n`, {
       status: 200,
       headers: {
         "Content-Type": "application/json; charset=utf-8",
         "Content-Disposition": `attachment; filename=\"radiography-evidence-${result.bundle.run_id}.json\"`
       }
-    });
+    }), requestId);
   } catch {
-    return NextResponse.json({ ok: false, error: "error" }, { status: 500 });
+    return buildErrorResponse({
+      requestId,
+      status: 500,
+      payload: { ok: false, error: "error" }
+    });
   }
 }

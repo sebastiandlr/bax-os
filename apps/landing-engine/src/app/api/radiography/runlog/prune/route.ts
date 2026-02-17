@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { pruneRunLogs } from "@/lib/radiography/runlogStorage";
+import {
+  buildErrorResponse,
+  getRequestId,
+  withRequestId
+} from "@/lib/radiography/requestId";
 
 export const runtime = "nodejs";
 
@@ -30,30 +35,42 @@ const formatIssues = (
 };
 
 export async function POST(request: Request) {
+  const requestId = getRequestId(request);
+
   let body: unknown;
   try {
     body = await readOptionalJsonBody(request);
   } catch {
-    return NextResponse.json(
-      { ok: false, error: "invalid", errors: ["body: request body must be valid JSON"] },
-      { status: 400 }
-    );
+    return buildErrorResponse({
+      requestId,
+      status: 400,
+      payload: {
+        ok: false,
+        error: "invalid",
+        errors: ["body: request body must be valid JSON"]
+      }
+    });
   }
 
   const parsedBody = PruneBodySchema.safeParse(body);
   if (!parsedBody.success) {
-    return NextResponse.json(
-      { ok: false, error: "invalid", errors: formatIssues(parsedBody.error.issues) },
-      { status: 400 }
-    );
+    return buildErrorResponse({
+      requestId,
+      status: 400,
+      payload: { ok: false, error: "invalid", errors: formatIssues(parsedBody.error.issues) }
+    });
   }
 
   try {
     const result = await pruneRunLogs(parsedBody.data);
-    return NextResponse.json({ ok: true, ...result });
+    return withRequestId(NextResponse.json({ ok: true, ...result }), requestId);
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Failed to prune run logs";
-    return NextResponse.json({ ok: false, error: "error", message }, { status: 500 });
+    return buildErrorResponse({
+      requestId,
+      status: 500,
+      payload: { ok: false, error: "error", message }
+    });
   }
 }
