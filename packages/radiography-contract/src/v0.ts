@@ -415,6 +415,37 @@ export const EvidenceReplayRequestIdV0Schema = z
   .regex(/^[A-Za-z0-9_-]+$/);
 export type EvidenceReplayRequestIdV0 = z.infer<typeof EvidenceReplayRequestIdV0Schema>;
 
+export const RunlogRequestIdV0Schema = z
+  .string()
+  .min(1)
+  .max(80)
+  .regex(/^[A-Za-z0-9_-]+$/);
+export type RunlogRequestIdV0 = z.infer<typeof RunlogRequestIdV0Schema>;
+
+export const RunlogErrorCodeV0Enum = z.enum([
+  "invalid",
+  "not_found",
+  "integrity_mismatch",
+  "artifact_not_json",
+  "bundle_too_large",
+  "seed_urls_required",
+  "run_already_exists",
+  "internal_error",
+  "error"
+]);
+export type RunlogErrorCodeV0 = z.infer<typeof RunlogErrorCodeV0Enum>;
+
+export const RunlogErrorResponseV0Schema = z
+  .object({
+    ok: z.literal(false),
+    error: RunlogErrorCodeV0Enum,
+    request_id: RunlogRequestIdV0Schema,
+    errors: z.array(z.string().min(1)).optional(),
+    details: z.unknown().optional()
+  })
+  .strict();
+export type RunlogErrorResponseV0 = z.infer<typeof RunlogErrorResponseV0Schema>;
+
 export const EvidenceReplayErrorCodeV0Enum = z.enum([
   "invalid",
   "integrity_mismatch",
