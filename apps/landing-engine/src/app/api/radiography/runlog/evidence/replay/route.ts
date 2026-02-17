@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { EvidenceReplayResponseV0Schema } from "@bax/radiography-contract";
+import {
+  EvidenceReplayErrorResponseV0Schema,
+  EvidenceReplayResponseV0Schema
+} from "@bax/radiography-contract";
 import { readRunLogById, writeRunLog } from "@/lib/radiography/runlogStorage";
 import {
-  buildErrorResponse,
+  assertRunlogErrorEnvelope,
   getRequestId,
   withRequestId
 } from "@/lib/radiography/requestId";
@@ -21,6 +24,14 @@ export const runtime = "nodejs";
  * - Internal 500 diagnostics are leak-safe: no raw payload values, zod messages, or nested paths.
  */
 const ALLOWED_ISSUES_PATH_KEYS = new Set(["replay", "compare", "persisted"]);
+const ALLOWED_REPLAY_ERROR_ISSUES_PATH_KEYS = new Set([
+  "root",
+  "ok",
+  "error",
+  "request_id",
+  "errors",
+  "details"
+]);
 
 const ReplayOptionsSchema = z
   .object({
@@ -70,6 +81,101 @@ const buildContractViolationDetails = (issues: z.ZodIssue[]) => {
   };
 };
 
+const isReplayContractValidationEnabled = () => {
+  return process.env.NODE_ENV !== "production" || process.env.BAX_CONTRACT_ASSERTS === "1";
+};
+
+const shouldThrowOnReplayContractViolation = () => process.env.BAX_CONTRACT_ASSERTS === "1";
+
+const sanitizeReplayErrorIssuePaths = (issues: z.ZodIssue[]) => {
+  const topLevelPaths = new Set<string>();
+
+  for (const issue of issues) {
+    if (issue.path.length === 0) {
+      topLevelPaths.add("root");
+      continue;
+    }
+
+    const firstSegment = issue.path[0];
+    if (
+      typeof firstSegment === "string" &&
+      ALLOWED_REPLAY_ERROR_ISSUES_PATH_KEYS.has(firstSegment)
+    ) {
+      topLevelPaths.add(firstSegment);
+      continue;
+    }
+
+    topLevelPaths.add("root");
+  }
+
+  return [...topLevelPaths].sort((a, b) => a.localeCompare(b));
+};
+
+const assertReplayErrorEnvelope = (payload: unknown) => {
+  if (!isReplayContractValidationEnabled()) {
+    return;
+  }
+
+  const parsed = EvidenceReplayErrorResponseV0Schema.safeParse(payload);
+  if (parsed.success) {
+    return;
+  }
+
+  const issues_paths = sanitizeReplayErrorIssuePaths(parsed.error.issues);
+  console.error("radiography_contract_violation", {
+    route_tag: "runlog/evidence/replay",
+    error: "contract_violation",
+    issues_count: parsed.error.issues.length,
+    issues_paths
+  });
+
+  if (shouldThrowOnReplayContractViolation()) {
+    throw new Error("contract_violation");
+  }
+};
+
+const buildReplayErrorResponse = (params: {
+  requestId: string;
+  status: number;
+  payload: {
+    ok: false;
+    error: string;
+    request_id?: string;
+    errors?: string[];
+    details?: unknown;
+    [key: string]: unknown;
+  };
+}) => {
+  const payloadWithRequestId = {
+    ...params.payload,
+    request_id: params.requestId
+  };
+
+  assertReplayErrorEnvelope({
+    ok: payloadWithRequestId.ok,
+    error: payloadWithRequestId.error,
+    request_id: payloadWithRequestId.request_id,
+    ...(payloadWithRequestId.errors !== undefined ? { errors: payloadWithRequestId.errors } : {}),
+    ...(payloadWithRequestId.details !== undefined ? { details: payloadWithRequestId.details } : {})
+  });
+
+  assertRunlogErrorEnvelope(
+    {
+      ok: payloadWithRequestId.ok,
+      error: payloadWithRequestId.error,
+      request_id: payloadWithRequestId.request_id,
+      ...(payloadWithRequestId.errors !== undefined ? { errors: payloadWithRequestId.errors } : {}),
+      ...(payloadWithRequestId.details !== undefined ? { details: payloadWithRequestId.details } : {})
+    },
+    { routeTag: "runlog/evidence/replay" }
+  );
+
+  return withRequestId(
+    NextResponse.json(payloadWithRequestId, { status: params.status }),
+    params.requestId
+  );
+};
+
 const buildInternalErrorResponse = (params: {
   request_id: string;
   code: "contract_violation" | "internal_error";
@@ -99,7 +205,7 @@ const buildInternalErrorResponse = (params: {
 
   console.error("radiography_replay_error", logPayload);
 
-  return buildErrorResponse({
+  return buildReplayErrorResponse({
     requestId: params.request_id,
     status: 500,
     payload: {
@@ -118,7 +224,7 @@ export async function POST(request: Request) {
     try {
       body = await request.json();
     } catch {
-      return buildErrorResponse({
+      return buildReplayErrorResponse({
         requestId: request_id,
         status: 400,
         payload: {
@@ -131,7 +237,7 @@ export async function POST(request: Request) {
 
     const parsedBody = ReplayBodySchema.safeParse(body);
     if (!parsedBody.success) {
-      return buildErrorResponse({
+      return buildReplayErrorResponse({
         requestId: request_id,
         status: 400,
         payload: {
@@ -160,7 +266,7 @@ export async function POST(request: Request) {
             ? 409
             : 400;
 
-      return buildErrorResponse({
+      return buildReplayErrorResponse({
         requestId: request_id,
         status,
         payload: {
@@ -182,7 +288,7 @@ export async function POST(request: Request) {
     if (persist_stub) {
       const existingRun = await readRunLogById(replayResult.result.run_id);
       if (existingRun.ok) {
-        return buildErrorResponse({
+        return buildReplayErrorResponse({
           requestId: request_id,
           status: 409,
           payload: {
@@ -192,7 +298,7 @@ export async function POST(request: Request) {
         });
       }
       if (existingRun.reason !== "not_found") {
-        return buildErrorResponse({
+        return buildReplayErrorResponse({
           requestId: request_id,
           status: 400,
           payload: {
