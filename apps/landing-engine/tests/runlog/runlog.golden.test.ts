@@ -371,6 +371,307 @@ test("extractRequestIds reports non-correlated ids on synthetic mismatch", async
   assertNoLeakPatterns(JSON.stringify(normalized));
 });
 
+test("redactForOperatorView removes sensitive keys and patterns deterministically", async () => {
+  const { redactForOperatorView, toRedactedJson } = await importFresh<{
+    redactForOperatorView: (value: unknown) => unknown;
+    toRedactedJson: (value: unknown) => string;
+  }>("src/lib/radiography/redaction.ts");
+
+  const input = {
+    created_at: "2026-02-16T00:00:00.000Z",
+    stack: "Error: secret\n at /mnt/private/path",
+    nested: {
+      file_path: "/Users/private/file",
+      note: "Visit https://example.com/secret",
+      keep: "safe"
+    },
+    windows: "C:\\private\\path\\file.txt",
+    array: ["file://secret", "ok"],
+    token_value: "abc",
+    details: {
+      href_link: "https://example.com/path?q=1",
+      safe: "value"
+    }
+  };
+
+  const redactedA = redactForOperatorView(input);
+  const redactedB = redactForOperatorView(input);
+  assert.deepEqual(redactedA, redactedB);
+
+  const text = toRedactedJson(input);
+  assertNoLeakPatterns(text);
+  assert.equal(text.includes("token_value"), false);
+  assert.equal(text.includes("file_path"), false);
+  assert.equal(text.includes("href_link"), false);
+  assert.equal(text.includes("[redacted]"), true);
+});
+
+test("normalizeRunlogResponse handles replay strict mismatch with correlated ids", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const runlogRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/route.ts"
+  );
+  const bundleRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/evidence/[run_id]/bundle/route.ts");
+  const replayRoute = await importFresh<{ POST: (request: Request) => Promise<Response> }>(
+    "src/app/api/radiography/runlog/evidence/replay/route.ts"
+  );
+  const runlogClient = await importFresh<{
+    extractRequestIds: (response: Response, body: unknown) => {
+      header?: string;
+      body?: string;
+      correlated: boolean;
+    };
+    normalizeRunlogResponse: <T>(
+      response: Response,
+      body: unknown,
+      opts?: { mode?: "runlog" | "replay" }
+    ) => { ok: true; data: T } | {
+      ok: false;
+      status: number;
+      error: string;
+      request_id?: string;
+      x_request_id?: string;
+      errors?: string[];
+      details?: unknown;
+    };
+  }>("src/lib/radiography/runlogClient.ts");
+
+  const runId = "run-replay-consumer1";
+  const postResponse = await runlogRoute.POST(
+    new Request("http://localhost/api/radiography/runlog", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runlog: createRunLogFixture({ run_id: runId }),
+        seed_urls_raw: ["https://example.com/replay-consumer1"]
+      })
+    })
+  );
+  assert.equal(postResponse.status, 200);
+
+  const bundleResponse = await bundleRoute.GET(
+    new Request(`http://localhost/api/radiography/runlog/evidence/${runId}/bundle`),
+    { params: Promise.resolve({ run_id: runId }) }
+  );
+  assert.equal(bundleResponse.status, 200);
+  const tamperedBundle = JSON.parse(await bundleResponse.text()) as {
+    artifacts: Array<{ kind: string; content: Record<string, unknown> }>;
+  };
+  const gatingArtifact = tamperedBundle.artifacts.find((artifact) => artifact.kind === "gating");
+  assert.ok(gatingArtifact);
+  gatingArtifact.content = {
+    ...(gatingArtifact.content ?? {}),
+    core_percent: 88
+  };
+
+  const replayResponse = await replayRoute.POST(
+    new Request("http://localhost/api/radiography/runlog/evidence/replay", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bundle: tamperedBundle, options: { strict: true } })
+    })
+  );
+  const replayBody = (await replayResponse.json()) as unknown;
+  const normalized = runlogClient.normalizeRunlogResponse<Record<string, unknown>>(
+    replayResponse,
+    replayBody,
+    { mode: "replay" }
+  );
+  const ids = runlogClient.extractRequestIds(replayResponse, replayBody);
+
+  if (normalized.ok) {
+    assert.fail("Expected normalized replay error");
+  }
+  assert.equal(normalized.status, 409);
+  assert.equal(normalized.error, "integrity_mismatch");
+  assert.equal(ids.correlated, true);
+  assert.equal(normalized.request_id, normalized.x_request_id);
+  assertNoLeakPatterns(JSON.stringify(normalized));
+});
+
+test("normalizeRunlogResponse handles artifact_not_json 422 with correlated ids", async () => {
+  await resetRunlogDir();
+  await resetEvidenceDir();
+
+  const artifactRoute = await importFresh<{
+    GET: (
+      request: Request,
+      context: { params: Promise<{ run_id: string; artifact_id: string }> }
+    ) => Promise<Response>;
+  }>("src/app/api/radiography/runlog/evidence/[run_id]/artifact/[artifact_id]/route.ts");
+  const runlogClient = await importFresh<{
+    extractRequestIds: (response: Response, body: unknown) => {
+      header?: string;
+      body?: string;
+      correlated: boolean;
+    };
+    normalizeRunlogResponse: <T>(
+      response: Response,
+      body: unknown,
+      opts?: { mode?: "runlog" | "replay" }
+    ) => { ok: true; data: T } | {
+      ok: false;
+      status: number;
+      error: string;
+      request_id?: string;
+      x_request_id?: string;
+      errors?: string[];
+      details?: unknown;
+    };
+  }>("src/lib/radiography/runlogClient.ts");
+
+  const runId = "run-nonjs-consumer1";
+  const artifactId = "inputs_summary-abcd1234";
+  const runDir = path.join(evidenceDir, runId);
+  await mkdir(runDir, { recursive: true });
+
+  const artifactText = "not json content\n";
+  const sha = createHash("sha256").update(artifactText, "utf8").digest("hex");
+  const bytes = Buffer.byteLength(artifactText, "utf8");
+
+  await writeFile(path.join(runDir, `${artifactId}.json`), artifactText, "utf8");
+  await writeFile(
+    path.join(runDir, "index.json"),
+    `${JSON.stringify(
+      {
+        run_id: runId,
+        created_at: "2026-02-16T00:00:00.000Z",
+        artifacts: [
+          {
+            id: artifactId,
+            kind: "inputs_summary",
+            sha256: sha,
+            bytes,
+            created_at: "2026-02-16T00:00:00.000Z"
+          }
+        ]
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const response = await artifactRoute.GET(
+    new Request(`http://localhost/api/radiography/runlog/evidence/${runId}/artifact/${artifactId}`),
+    { params: Promise.resolve({ run_id: runId, artifact_id: artifactId }) }
+  );
+  const body = (await response.json()) as unknown;
+  const normalized = runlogClient.normalizeRunlogResponse<Record<string, unknown>>(response, body, {
+    mode: "runlog"
+  });
+  const ids = runlogClient.extractRequestIds(response, body);
+
+  if (normalized.ok) {
+    assert.fail("Expected normalized artifact_not_json error");
+  }
+  assert.equal(normalized.status, 422);
+  assert.equal(normalized.error, "artifact_not_json");
+  assert.equal(ids.correlated, true);
+  assert.equal(normalized.request_id, normalized.x_request_id);
+  assertNoLeakPatterns(JSON.stringify(normalized));
+});
+
+test("radiography-runlog CLI list success prints x-request-id", async () => {
+  const logs: string[] = [];
+  const errors: string[] = [];
+  const { runRadiographyRunlogCli } = await importFresh<{
+    runRadiographyRunlogCli: (args: string[], deps?: {
+      fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
+      baseUrl?: string;
+      io?: { log: (line: string) => void; error: (line: string) => void };
+    }) => Promise<number>;
+  }>("src/bin/radiography-runlog.ts");
+
+  const exitCode = await runRadiographyRunlogCli(["list"], {
+    baseUrl: "http://localhost:3000",
+    fetchImpl: async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          items: []
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "x-request-id": "req-list-1"
+          }
+        }
+      ),
+    io: {
+      log: (line) => logs.push(line),
+      error: (line) => errors.push(line)
+    }
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(errors.length, 0);
+  const parsed = JSON.parse(logs.join("").trim()) as {
+    ok?: boolean;
+    x_request_id?: string;
+  };
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.x_request_id, "req-list-1");
+  assertNoLeakPatterns(JSON.stringify(parsed));
+});
+
+test("radiography-runlog CLI error output shows non-correlated request ids", async () => {
+  const logs: string[] = [];
+  const errors: string[] = [];
+  const { runRadiographyRunlogCli } = await importFresh<{
+    runRadiographyRunlogCli: (args: string[], deps?: {
+      fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
+      baseUrl?: string;
+      io?: { log: (line: string) => void; error: (line: string) => void };
+    }) => Promise<number>;
+  }>("src/bin/radiography-runlog.ts");
+
+  const exitCode = await runRadiographyRunlogCli(["get", "run-1"], {
+    baseUrl: "http://localhost:3000",
+    fetchImpl: async () =>
+      new Response(
+        JSON.stringify({
+          ok: false,
+          error: "invalid",
+          request_id: "body-id"
+        }),
+        {
+          status: 400,
+          headers: {
+            "content-type": "application/json",
+            "x-request-id": "header-id"
+          }
+        }
+      ),
+    io: {
+      log: (line) => logs.push(line),
+      error: (line) => errors.push(line)
+    }
+  });
+
+  assert.equal(exitCode, 2);
+  assert.equal(logs.length, 0);
+  const parsed = JSON.parse(errors.join("").trim()) as {
+    ok?: boolean;
+    correlated?: boolean;
+    request_id?: string;
+    x_request_id?: string;
+  };
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.correlated, false);
+  assert.equal(parsed.request_id, "body-id");
+  assert.equal(parsed.x_request_id, "header-id");
+  assertNoLeakPatterns(JSON.stringify(parsed));
+});
+
 test("runlogStorage.listRunLogs ignores invalid JSON and keeps deterministic order", async () => {
   await resetRunlogDir();
   await resetEvidenceDir();
