@@ -9,6 +9,12 @@ import {
 } from "@/lib/radiography/runlogUtils";
 
 export const runtime = "nodejs";
+/**
+ * Replay route invariants:
+ * - `x-request-id` header is attached to every response (2xx/4xx/5xx).
+ * - All non-200 JSON bodies include `request_id` and correlate with the header value.
+ * - Internal 500 diagnostics are leak-safe: no raw payload values, zod messages, or nested paths.
+ */
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID_FALLBACK_SANITIZE_PATTERN = /[^a-z0-9-]/g;
 const ALLOWED_ISSUES_PATH_KEYS = new Set(["replay", "compare", "persisted"]);

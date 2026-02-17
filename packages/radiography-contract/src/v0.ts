@@ -407,3 +407,30 @@ export const EvidenceReplayResponseV0Schema = z
   })
   .strict();
 export type EvidenceReplayResponseV0 = z.infer<typeof EvidenceReplayResponseV0Schema>;
+
+export const EvidenceReplayRequestIdV0Schema = z
+  .string()
+  .min(1)
+  .max(80)
+  .regex(/^[A-Za-z0-9_-]+$/);
+export type EvidenceReplayRequestIdV0 = z.infer<typeof EvidenceReplayRequestIdV0Schema>;
+
+export const EvidenceReplayErrorCodeV0Enum = z.enum([
+  "invalid",
+  "integrity_mismatch",
+  "bundle_too_large",
+  "run_already_exists",
+  "internal_error"
+]);
+export type EvidenceReplayErrorCodeV0 = z.infer<typeof EvidenceReplayErrorCodeV0Enum>;
+
+export const EvidenceReplayErrorResponseV0Schema = z
+  .object({
+    ok: z.literal(false),
+    error: EvidenceReplayErrorCodeV0Enum,
+    request_id: EvidenceReplayRequestIdV0Schema,
+    errors: z.array(z.string().min(1)).optional(),
+    details: z.unknown().optional()
+  })
+  .strict();
+export type EvidenceReplayErrorResponseV0 = z.infer<typeof EvidenceReplayErrorResponseV0Schema>;

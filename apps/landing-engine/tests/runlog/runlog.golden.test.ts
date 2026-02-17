@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { EvidenceReplayResponseV0Schema } from "@bax/radiography-contract";
+import {
+  EvidenceReplayErrorResponseV0Schema,
+  EvidenceReplayResponseV0Schema
+} from "@bax/radiography-contract";
 
 type RunLogFixtureInput = {
   run_id: string;
@@ -1408,6 +1411,7 @@ test("evidence replay invalid JSON returns 400 with request_id correlation", asy
   assert.equal(body.error, "invalid");
   assert.match(body.request_id ?? "", REQUEST_ID_HEADER_PATTERN);
   assert.equal(body.request_id, responseRequestIdHeader);
+  assert.equal(EvidenceReplayErrorResponseV0Schema.safeParse(body).success, true);
   assertNoLeakPatterns(JSON.stringify(body));
 });
 
@@ -1494,6 +1498,7 @@ test("evidence replay returns leak-safe contract_violation details on internal s
     assert.equal(replayBody.error, "internal_error");
     assert.match(replayBody.request_id ?? "", REQUEST_ID_HEADER_PATTERN);
     assert.equal(replayErrorRequestIdHeader, replayBody.request_id);
+    assert.equal(EvidenceReplayErrorResponseV0Schema.safeParse(replayBody).success, true);
     assert.equal(replayBody.details?.code, "contract_violation");
     assert.equal(replayBody.details?.issues_count, 5);
     assert.deepEqual(replayBody.details?.issues_paths, ["compare", "replay", "root"]);
@@ -1597,6 +1602,7 @@ test("evidence replay strict mode fails with 409 integrity_mismatch when bundle 
   assert.equal(replayBody.error, "integrity_mismatch");
   assert.match(replayBody.request_id ?? "", REQUEST_ID_HEADER_PATTERN);
   assert.equal(replayBody.request_id, replayErrorRequestIdHeader);
+  assert.equal(EvidenceReplayErrorResponseV0Schema.safeParse(replayBody).success, true);
   assert.equal(typeof replayBody.details?.code, "string");
   assertNoLeakPatterns(JSON.stringify(replayBody));
 });
