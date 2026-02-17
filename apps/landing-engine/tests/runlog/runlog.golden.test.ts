@@ -657,9 +657,9 @@ test("radiography-runlog CLI error output shows non-correlated request ids", asy
     }
   });
 
-  assert.equal(exitCode, 2);
-  assert.equal(logs.length, 0);
-  const parsed = JSON.parse(errors.join("").trim()) as {
+  assert.equal(exitCode, 0);
+  assert.equal(errors.length, 0);
+  const parsed = JSON.parse(logs.join("").trim()) as {
     ok?: boolean;
     correlated?: boolean;
     request_id?: string;
@@ -669,6 +669,97 @@ test("radiography-runlog CLI error output shows non-correlated request ids", asy
   assert.equal(parsed.correlated, false);
   assert.equal(parsed.request_id, "body-id");
   assert.equal(parsed.x_request_id, "header-id");
+  assertNoLeakPatterns(JSON.stringify(parsed));
+});
+
+test("radiography-runlog CLI error output exits 1 with --fail=1", async () => {
+  const logs: string[] = [];
+  const errors: string[] = [];
+  const { runRadiographyRunlogCli } = await importFresh<{
+    runRadiographyRunlogCli: (args: string[], deps?: {
+      fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
+      baseUrl?: string;
+      io?: { log: (line: string) => void; error: (line: string) => void };
+    }) => Promise<number>;
+  }>("src/bin/radiography-runlog.ts");
+
+  const exitCode = await runRadiographyRunlogCli(["get", "run-1", "--fail=1"], {
+    baseUrl: "http://localhost:3000",
+    fetchImpl: async () =>
+      new Response(
+        JSON.stringify({
+          ok: false,
+          error: "invalid",
+          request_id: "body-id"
+        }),
+        {
+          status: 400,
+          headers: {
+            "content-type": "application/json",
+            "x-request-id": "header-id"
+          }
+        }
+      ),
+    io: {
+      log: (line) => logs.push(line),
+      error: (line) => errors.push(line)
+    }
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(errors.length, 0);
+  const parsed = JSON.parse(logs.join("").trim()) as {
+    ok?: boolean;
+    error?: string;
+    correlated?: boolean;
+  };
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error, "invalid");
+  assert.equal(parsed.correlated, false);
+  assertNoLeakPatterns(JSON.stringify(parsed));
+});
+
+test("radiography-runlog CLI success keeps exit 0 with --fail=1", async () => {
+  const logs: string[] = [];
+  const errors: string[] = [];
+  const { runRadiographyRunlogCli } = await importFresh<{
+    runRadiographyRunlogCli: (args: string[], deps?: {
+      fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
+      baseUrl?: string;
+      io?: { log: (line: string) => void; error: (line: string) => void };
+    }) => Promise<number>;
+  }>("src/bin/radiography-runlog.ts");
+
+  const exitCode = await runRadiographyRunlogCli(["list", "--fail=1"], {
+    baseUrl: "http://localhost:3000",
+    fetchImpl: async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          items: []
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "x-request-id": "req-list-1"
+          }
+        }
+      ),
+    io: {
+      log: (line) => logs.push(line),
+      error: (line) => errors.push(line)
+    }
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(errors.length, 0);
+  const parsed = JSON.parse(logs.join("").trim()) as {
+    ok?: boolean;
+    x_request_id?: string;
+  };
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.x_request_id, "req-list-1");
   assertNoLeakPatterns(JSON.stringify(parsed));
 });
 
