@@ -1,10 +1,12 @@
+/**
+ * Local smoke:
+ * export BAX_BASE_URL=http://localhost:3000
+ * npm --workspace apps/landing-engine run radiography:runlog -- get run-foo
+ * npm --workspace apps/landing-engine run radiography:runlog -- get run-foo --fail=1
+ */
 import { pathToFileURL } from "node:url";
 import { EvidenceReplayResponseV0Schema } from "@bax/radiography-contract";
-import {
-  extractRequestIds,
-  normalizeRunlogResponse,
-  type RunlogApiError
-} from "../lib/radiography/runlogClient";
+import { normalizeRunlogResponse, type RunlogApiError } from "../lib/radiography/runlogClient";
 import { redactForOperatorView } from "../lib/radiography/redaction";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -20,22 +22,73 @@ type CliDeps = {
   io?: CliIO;
 };
 
+type CliResult = {
+  output: unknown;
+};
+
 const defaultIo: CliIO = {
   log: (line) => console.log(line),
   error: (line) => console.error(line)
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 };
 
 const buildRequestUrl = (baseUrl: string, path: string) => {
   return `${baseUrl.replace(/\/+$/, "")}${path}`;
 };
 
-const printJson = (io: CliIO, value: unknown, isError = false) => {
-  const serialized = `${JSON.stringify(redactForOperatorView(value), null, 2)}\n`;
-  if (isError) {
-    io.error(serialized);
-    return;
+const printJson = (io: CliIO, value: unknown) => {
+  io.log(`${JSON.stringify(redactForOperatorView(value), null, 2)}\n`);
+};
+
+const parseFailFlag = (args: string[]) => {
+  const failArg = args.find((arg) => arg.startsWith("--fail="));
+  if (!failArg) {
+    return false;
   }
-  io.log(serialized);
+
+  const raw = failArg.slice("--fail=".length).trim().toLowerCase();
+  return raw === "1" || raw === "true";
+};
+
+const stripFailFlag = (args: string[]) => {
+  return args.filter((arg) => !arg.startsWith("--fail="));
+};
+
+const inferIsErrorOutput = (output: unknown) => {
+  return isRecord(output) && output.ok === false;
+};
+
+const finalizeWithExitRule = (io: CliIO, output: unknown, failOnError: boolean) => {
+  printJson(io, output);
+  if (failOnError && inferIsErrorOutput(output)) {
+    return 1;
+  }
+  return 0;
+};
+
+const buildCliUnhandledOutput = (message: string) => {
+  return {
+    ok: false,
+    error: "cli_unhandled",
+    status: 0,
+    correlated: false,
+    details: {
+      message
+    }
+  };
+};
+
+const buildInvalidArgsOutput = (message: string) => {
+  return {
+    ok: false,
+    error: "invalid",
+    status: 0,
+    correlated: false,
+    errors: [message]
+  };
 };
 
 const buildNormalizedErrorOutput = (
@@ -71,25 +124,24 @@ const requestJson = async (
 
 const handleGetRequest = async (
   fetchImpl: FetchLike,
-  io: CliIO,
   mode: "runlog" | "replay",
   url: string
-) => {
+): Promise<CliResult> => {
   const { response, body } = await requestJson(fetchImpl, url);
   const normalized = normalizeRunlogResponse<unknown>(response, body, { mode });
 
   if (!normalized.ok) {
-    printJson(io, buildNormalizedErrorOutput(response, normalized), true);
-    return 2;
+    return { output: buildNormalizedErrorOutput(response, normalized) };
   }
 
-  printJson(io, {
-    ok: true,
-    status: response.status,
-    x_request_id: response.headers.get("x-request-id"),
-    data: normalized.data
-  });
-  return 0;
+  return {
+    output: {
+      ok: true,
+      status: response.status,
+      x_request_id: response.headers.get("x-request-id"),
+      data: normalized.data
+    }
+  };
 };
 
 const parseStrictFlag = (args: string[]) => {
@@ -101,10 +153,6 @@ const parseStrictFlag = (args: string[]) => {
   return raw !== "0";
 };
 
-const parseCorrelation = (response: Response, body: unknown) => {
-  return extractRequestIds(response, body).correlated;
-};
-
 export const runRadiographyRunlogCli = async (
   args: string[],
   deps?: CliDeps
@@ -112,74 +160,91 @@ export const runRadiographyRunlogCli = async (
   const fetchImpl = deps?.fetchImpl ?? (fetch as FetchLike);
   const baseUrl = deps?.baseUrl ?? process.env.BAX_BASE_URL ?? "http://localhost:3000";
   const io = deps?.io ?? defaultIo;
+  const failOnError = parseFailFlag(args);
+  const parsedArgs = stripFailFlag(args);
 
-  const [command, ...rest] = args;
+  const [command, ...rest] = parsedArgs;
   if (!command) {
-    io.error("Usage: radiography-runlog <list|get|evidence|artifact|replay> ...");
-    return 3;
+    return finalizeWithExitRule(
+      io,
+      buildInvalidArgsOutput("Usage: radiography-runlog <list|get|evidence|artifact|replay> ..."),
+      failOnError
+    );
   }
 
   try {
     if (command === "list") {
-      return await handleGetRequest(
+      const result = await handleGetRequest(
         fetchImpl,
-        io,
         "runlog",
         buildRequestUrl(baseUrl, "/api/radiography/runlog?limit=20")
       );
+      return finalizeWithExitRule(io, result.output, failOnError);
     }
 
     if (command === "get") {
       const runId = rest[0];
       if (!runId) {
-        io.error("Usage: radiography-runlog get <run_id>");
-        return 3;
+        return finalizeWithExitRule(
+          io,
+          buildInvalidArgsOutput("Usage: radiography-runlog get <run_id>"),
+          failOnError
+        );
       }
-      return await handleGetRequest(
+      const result = await handleGetRequest(
         fetchImpl,
-        io,
         "runlog",
         buildRequestUrl(baseUrl, `/api/radiography/runlog/${encodeURIComponent(runId)}`)
       );
+      return finalizeWithExitRule(io, result.output, failOnError);
     }
 
     if (command === "evidence") {
       const runId = rest[0];
       if (!runId) {
-        io.error("Usage: radiography-runlog evidence <run_id>");
-        return 3;
+        return finalizeWithExitRule(
+          io,
+          buildInvalidArgsOutput("Usage: radiography-runlog evidence <run_id>"),
+          failOnError
+        );
       }
-      return await handleGetRequest(
+      const result = await handleGetRequest(
         fetchImpl,
-        io,
         "runlog",
         buildRequestUrl(baseUrl, `/api/radiography/runlog/evidence/${encodeURIComponent(runId)}`)
       );
+      return finalizeWithExitRule(io, result.output, failOnError);
     }
 
     if (command === "artifact") {
       const runId = rest[0];
       const artifactId = rest[1];
       if (!runId || !artifactId) {
-        io.error("Usage: radiography-runlog artifact <run_id> <artifact_id>");
-        return 3;
+        return finalizeWithExitRule(
+          io,
+          buildInvalidArgsOutput("Usage: radiography-runlog artifact <run_id> <artifact_id>"),
+          failOnError
+        );
       }
-      return await handleGetRequest(
+      const result = await handleGetRequest(
         fetchImpl,
-        io,
         "runlog",
         buildRequestUrl(
           baseUrl,
           `/api/radiography/runlog/evidence/${encodeURIComponent(runId)}/artifact/${encodeURIComponent(artifactId)}`
         )
       );
+      return finalizeWithExitRule(io, result.output, failOnError);
     }
 
     if (command === "replay") {
       const runId = rest[0];
       if (!runId) {
-        io.error("Usage: radiography-runlog replay <run_id> [--strict=0|1]");
-        return 3;
+        return finalizeWithExitRule(
+          io,
+          buildInvalidArgsOutput("Usage: radiography-runlog replay <run_id> [--strict=0|1]"),
+          failOnError
+        );
       }
 
       const strict = parseStrictFlag(rest.slice(1));
@@ -191,8 +256,11 @@ export const runRadiographyRunlogCli = async (
         mode: "runlog"
       });
       if (!normalizedBundle.ok) {
-        printJson(io, buildNormalizedErrorOutput(bundleFetch.response, normalizedBundle), true);
-        return 2;
+        return finalizeWithExitRule(
+          io,
+          buildNormalizedErrorOutput(bundleFetch.response, normalizedBundle),
+          failOnError
+        );
       }
 
       const replayFetch = await requestJson(
@@ -212,14 +280,16 @@ export const runRadiographyRunlogCli = async (
         mode: "replay"
       });
       if (!normalizedReplay.ok) {
-        const payload = buildNormalizedErrorOutput(replayFetch.response, normalizedReplay);
-        printJson(io, { ...payload, correlated: parseCorrelation(replayFetch.response, replayFetch.body) }, true);
-        return 2;
+        return finalizeWithExitRule(
+          io,
+          buildNormalizedErrorOutput(replayFetch.response, normalizedReplay),
+          failOnError
+        );
       }
 
       const parsedReplay = EvidenceReplayResponseV0Schema.safeParse(normalizedReplay.data);
       if (!parsedReplay.success) {
-        printJson(
+        return finalizeWithExitRule(
           io,
           {
             ok: false,
@@ -228,25 +298,25 @@ export const runRadiographyRunlogCli = async (
             x_request_id: replayFetch.response.headers.get("x-request-id"),
             correlated: false
           },
-          true
+          failOnError
         );
-        return 2;
       }
 
-      printJson(io, {
-        ok: true,
-        status: replayFetch.response.status,
-        x_request_id: replayFetch.response.headers.get("x-request-id"),
-        data: parsedReplay.data
-      });
-      return 0;
+      return finalizeWithExitRule(
+        io,
+        {
+          ok: true,
+          status: replayFetch.response.status,
+          x_request_id: replayFetch.response.headers.get("x-request-id"),
+          data: parsedReplay.data
+        },
+        failOnError
+      );
     }
 
-    io.error(`Unknown command: ${command}`);
-    return 3;
+    return finalizeWithExitRule(io, buildInvalidArgsOutput(`Unknown command: ${command}`), failOnError);
   } catch {
-    io.error("Unexpected runtime error.");
-    return 3;
+    return finalizeWithExitRule(io, buildCliUnhandledOutput("Unexpected runtime error."), failOnError);
   }
 };
 
