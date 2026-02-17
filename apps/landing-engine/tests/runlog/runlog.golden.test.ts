@@ -87,6 +87,7 @@ const createRunLogFixture = (input: RunLogFixtureInput) => {
 let testRoot = "";
 let runlogDir = "";
 let evidenceDir = "";
+const previousContractAsserts = process.env.BAX_CONTRACT_ASSERTS;
 
 test.before(async () => {
   testRoot = await mkdtemp(path.join(tmpdir(), "bax-runlog-golden-"));
@@ -96,9 +97,16 @@ test.before(async () => {
   await mkdir(evidenceDir, { recursive: true });
   process.env.BAX_RUNLOG_DIR = runlogDir;
   process.env.BAX_EVIDENCE_DIR = evidenceDir;
+  process.env.BAX_CONTRACT_ASSERTS = "1";
 });
 
 test.after(async () => {
+  if (previousContractAsserts === undefined) {
+    delete process.env.BAX_CONTRACT_ASSERTS;
+  } else {
+    process.env.BAX_CONTRACT_ASSERTS = previousContractAsserts;
+  }
+
   if (testRoot) {
     await rm(testRoot, { recursive: true, force: true });
   }
@@ -141,6 +149,64 @@ const assertRequestIdCorrelation = (
   assert.equal(body.request_id, requestId);
   return requestId;
 };
+
+const assertRunlogErrorEnvelopeContract = (body: {
+  ok?: unknown;
+  error?: unknown;
+  request_id?: unknown;
+  errors?: unknown;
+  details?: unknown;
+}) => {
+  const envelopeProjection = {
+    ok: body.ok,
+    error: body.error,
+    request_id: body.request_id,
+    ...(body.errors !== undefined ? { errors: body.errors } : {}),
+    ...(body.details !== undefined ? { details: body.details } : {})
+  };
+
+  assert.equal(RunlogErrorResponseV0Schema.safeParse(envelopeProjection).success, true);
+};
+
+test("assertRunlogErrorEnvelope throws contract_violation with leak-safe logging when enabled", async () => {
+  const { assertRunlogErrorEnvelope } = await importFresh<{
+    assertRunlogErrorEnvelope: (
+      payload: unknown,
+      options?: { routeTag?: string }
+    ) => void;
+  }>("src/lib/radiography/requestId.ts");
+
+  const originalConsoleError = console.error;
+  const loggedErrors: unknown[][] = [];
+  console.error = (...args: unknown[]) => {
+    loggedErrors.push(args);
+  };
+
+  try {
+    assert.throws(
+      () => assertRunlogErrorEnvelope({ ok: false, error: "invalid" }, { routeTag: "runlog/test" }),
+      /contract_violation/
+    );
+
+    assert.equal(loggedErrors.length, 1);
+    assert.equal(loggedErrors[0]?.[0], "radiography_contract_violation");
+
+    const logPayload = loggedErrors[0]?.[1] as {
+      route_tag?: string;
+      error?: string;
+      issues_count?: number;
+      issues_paths?: string[];
+    };
+
+    assert.equal(logPayload.route_tag, "runlog/test");
+    assert.equal(logPayload.error, "contract_violation");
+    assert.equal(typeof logPayload.issues_count, "number");
+    assert.ok((logPayload.issues_paths?.length ?? 0) >= 1);
+    assertNoLeakPatterns(JSON.stringify(logPayload));
+  } finally {
+    console.error = originalConsoleError;
+  }
+});
 
 test("runlogStorage.listRunLogs ignores invalid JSON and keeps deterministic order", async () => {
   await resetRunlogDir();
@@ -865,6 +931,7 @@ test("evidence bundle export fails on integrity mismatch when artifact is tamper
   assert.equal(body.error, "integrity_mismatch");
   assert.equal(body.artifact_id, artifactId);
   assertRequestIdCorrelation(response, body);
+  assertRunlogErrorEnvelopeContract(body);
   assertNoLeakPatterns(JSON.stringify(body));
 });
 
@@ -1404,6 +1471,7 @@ test("evidence bundle import rejects traversal, oversized payload, and non-json 
   assert.equal(nonJsonBody.ok, false);
   assert.equal(nonJsonBody.error, "artifact_not_json");
   assertRequestIdCorrelation(nonJsonResponse, nonJsonBody);
+  assertRunlogErrorEnvelopeContract(nonJsonBody);
   assertNoLeakPatterns(JSON.stringify(nonJsonBody));
 });
 
