@@ -3,6 +3,11 @@ import { z } from "zod";
 import { EvidenceReplayResponseV0Schema } from "@bax/radiography-contract";
 import { readRunLogById, writeRunLog } from "@/lib/radiography/runlogStorage";
 import {
+  buildErrorResponse,
+  getRequestId,
+  withRequestId
+} from "@/lib/radiography/requestId";
+import {
   computePortableReplayFromEvidenceBundle,
   EvidenceBundleV0Schema,
   RUNLOG_RUN_ID_PATTERN
@@ -15,8 +20,6 @@ export const runtime = "nodejs";
  * - All non-200 JSON bodies include `request_id` and correlate with the header value.
  * - Internal 500 diagnostics are leak-safe: no raw payload values, zod messages, or nested paths.
  */
-const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
-const REQUEST_ID_FALLBACK_SANITIZE_PATTERN = /[^a-z0-9-]/g;
 const ALLOWED_ISSUES_PATH_KEYS = new Set(["replay", "compare", "persisted"]);
 
 const ReplayOptionsSchema = z
@@ -67,72 +70,6 @@ const buildContractViolationDetails = (issues: z.ZodIssue[]) => {
   };
 };
 
-const normalizeRequestId = (value: string | null): string | null => {
-  if (!value) {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  if (!REQUEST_ID_PATTERN.test(trimmed)) {
-    return null;
-  }
-  return trimmed;
-};
-
-const buildFallbackRequestId = () => {
-  const fallbackId = `${Date.now().toString(36)}-${Math.random()
-    .toString(36)
-    .slice(2, 10)}`
-    .toLowerCase()
-    .replace(REQUEST_ID_FALLBACK_SANITIZE_PATTERN, "")
-    .slice(0, 80);
-
-  return fallbackId.length > 0 ? fallbackId : "req";
-};
-
-const getRequestId = (request: Request) => {
-  const incomingRequestId = normalizeRequestId(request.headers.get("x-request-id"));
-  if (incomingRequestId) {
-    return incomingRequestId;
-  }
-
-  const generatedRequestId =
-    typeof globalThis.crypto?.randomUUID === "function" ? globalThis.crypto.randomUUID() : null;
-  const normalizedGeneratedRequestId = normalizeRequestId(generatedRequestId);
-  if (normalizedGeneratedRequestId) {
-    return normalizedGeneratedRequestId;
-  }
-
-  return buildFallbackRequestId();
-};
-
-const withRequestId = (response: NextResponse, requestId: string) => {
-  response.headers.set("x-request-id", requestId);
-  return response;
-};
-
-const buildErrorResponse = (params: {
-  request_id: string;
-  status: number;
-  payload: {
-    ok: false;
-    error: string;
-    request_id?: string;
-    errors?: string[];
-    details?: unknown;
-  };
-}) => {
-  const payloadWithRequestId = {
-    ...params.payload,
-    request_id: params.request_id
-  };
-
-  return withRequestId(
-    NextResponse.json(payloadWithRequestId, { status: params.status }),
-    params.request_id
-  );
-};
-
 const buildInternalErrorResponse = (params: {
   request_id: string;
   code: "contract_violation" | "internal_error";
@@ -163,7 +100,7 @@ const buildInternalErrorResponse = (params: {
   console.error("radiography_replay_error", logPayload);
 
   return buildErrorResponse({
-    request_id: params.request_id,
+    requestId: params.request_id,
     status: 500,
     payload: {
       ok: false,
@@ -182,7 +119,7 @@ export async function POST(request: Request) {
       body = await request.json();
     } catch {
       return buildErrorResponse({
-        request_id,
+        requestId: request_id,
         status: 400,
         payload: {
           ok: false,
@@ -195,7 +132,7 @@ export async function POST(request: Request) {
     const parsedBody = ReplayBodySchema.safeParse(body);
     if (!parsedBody.success) {
       return buildErrorResponse({
-        request_id,
+        requestId: request_id,
         status: 400,
         payload: {
           ok: false,
@@ -224,7 +161,7 @@ export async function POST(request: Request) {
             : 400;
 
       return buildErrorResponse({
-        request_id,
+        requestId: request_id,
         status,
         payload: {
           ok: false,
@@ -246,7 +183,7 @@ export async function POST(request: Request) {
       const existingRun = await readRunLogById(replayResult.result.run_id);
       if (existingRun.ok) {
         return buildErrorResponse({
-          request_id,
+          requestId: request_id,
           status: 409,
           payload: {
             ok: false,
@@ -256,7 +193,7 @@ export async function POST(request: Request) {
       }
       if (existingRun.reason !== "not_found") {
         return buildErrorResponse({
-          request_id,
+          requestId: request_id,
           status: 400,
           payload: {
             ok: false,

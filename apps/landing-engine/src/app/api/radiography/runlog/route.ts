@@ -10,6 +10,11 @@ import {
   extractSeedUrlsFromRunLogPayload,
   sanitizeRunLogForPersist
 } from "@/lib/radiography/runlogUtils";
+import {
+  buildErrorResponse,
+  getRequestId,
+  withRequestId
+} from "@/lib/radiography/requestId";
 
 export const runtime = "nodejs";
 
@@ -46,6 +51,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> => {
 };
 
 export async function GET(request: Request) {
+  const requestId = getRequestId(request);
+
   try {
     const { searchParams } = new URL(request.url);
     const limit = parseListLimit(searchParams.get("limit"));
@@ -62,38 +69,51 @@ export async function GET(request: Request) {
       is_stub: item.is_stub,
       top_blockers: item.top_blockers
     }));
-    return NextResponse.json({ ok: true, items });
+    return withRequestId(NextResponse.json({ ok: true, items }), requestId);
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Failed to list runlogs";
-    return NextResponse.json({ ok: false, error: "error", message }, { status: 500 });
+    return buildErrorResponse({
+      requestId,
+      status: 500,
+      payload: { ok: false, error: "error", message }
+    });
   }
 }
 
 export async function POST(request: Request) {
+  const requestId = getRequestId(request);
+
   let body: unknown;
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json(
-      { ok: false, error: "invalid", errors: ["runlog: request body must be valid JSON"] },
-      { status: 400 }
-    );
+    return buildErrorResponse({
+      requestId,
+      status: 400,
+      payload: {
+        ok: false,
+        error: "invalid",
+        errors: ["runlog: request body must be valid JSON"]
+      }
+    });
   }
 
   const parsedBody = RunlogPostBodySchema.safeParse(body);
   if (!parsedBody.success) {
-    return NextResponse.json(
-      { ok: false, error: "invalid", errors: formatIssues(parsedBody.error.issues) },
-      { status: 400 }
-    );
+    return buildErrorResponse({
+      requestId,
+      status: 400,
+      payload: { ok: false, error: "invalid", errors: formatIssues(parsedBody.error.issues) }
+    });
   }
 
   if (!isRecord(parsedBody.data.runlog)) {
-    return NextResponse.json(
-      { ok: false, error: "invalid", errors: ["runlog: must be an object"] },
-      { status: 400 }
-    );
+    return buildErrorResponse({
+      requestId,
+      status: 400,
+      payload: { ok: false, error: "invalid", errors: ["runlog: must be an object"] }
+    });
   }
 
   const allSeedUrls = [
@@ -116,14 +136,15 @@ export async function POST(request: Request) {
   const parsed = RadiographyRunLogV0Schema.safeParse(runlogObject);
 
   if (!parsed.success) {
-    return NextResponse.json(
-      { ok: false, error: "invalid", errors: formatIssues(parsed.error.issues) },
-      { status: 400 }
-    );
+    return buildErrorResponse({
+      requestId,
+      status: 400,
+      payload: { ok: false, error: "invalid", errors: formatIssues(parsed.error.issues) }
+    });
   }
 
   const hardenedRunlog = deriveRunLogServerFields(parsed.data);
 
   await writeRunLog(hardenedRunlog);
-  return NextResponse.json({ ok: true, run_id: hardenedRunlog.run_id });
+  return withRequestId(NextResponse.json({ ok: true, run_id: hardenedRunlog.run_id }), requestId);
 }

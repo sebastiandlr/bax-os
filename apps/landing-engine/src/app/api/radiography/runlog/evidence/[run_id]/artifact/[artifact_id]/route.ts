@@ -4,6 +4,11 @@ import {
   readEvidenceArtifactById,
   RUNLOG_RUN_ID_PATTERN
 } from "@/lib/radiography/runlogUtils";
+import {
+  buildErrorResponse,
+  getRequestId,
+  withRequestId
+} from "@/lib/radiography/requestId";
 
 export const runtime = "nodejs";
 
@@ -14,12 +19,18 @@ type RunLogArtifactRouteContext = {
   }>;
 };
 
-export async function GET(_request: Request, context: RunLogArtifactRouteContext) {
+export async function GET(request: Request, context: RunLogArtifactRouteContext) {
+  const requestId = getRequestId(request);
+
   try {
     const { run_id, artifact_id } = await context.params;
 
     if (!RUNLOG_RUN_ID_PATTERN.test(run_id) || !EVIDENCE_ARTIFACT_ID_PATTERN.test(artifact_id)) {
-      return NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
+      return buildErrorResponse({
+        requestId,
+        status: 400,
+        payload: { ok: false, error: "invalid" }
+      });
     }
 
     const result = await readEvidenceArtifactById(run_id, artifact_id);
@@ -33,11 +44,19 @@ export async function GET(_request: Request, context: RunLogArtifactRouteContext
               ? 422
               : 400;
 
-      return NextResponse.json({ ok: false, error: result.error }, { status });
+      return buildErrorResponse({
+        requestId,
+        status,
+        payload: { ok: false, error: result.error }
+      });
     }
 
-    return NextResponse.json({ ok: true, artifact: result.artifact });
+    return withRequestId(NextResponse.json({ ok: true, artifact: result.artifact }), requestId);
   } catch {
-    return NextResponse.json({ ok: false, error: "error" }, { status: 500 });
+    return buildErrorResponse({
+      requestId,
+      status: 500,
+      payload: { ok: false, error: "error" }
+    });
   }
 }
