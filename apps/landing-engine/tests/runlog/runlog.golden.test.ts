@@ -120,6 +120,14 @@ const assertNoLeakPatterns = (value: string) => {
   assert.equal(value.includes("https://"), false);
 };
 
+const REQUEST_ID_HEADER_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
+
+const assertRequestIdHeader = (response: Response): string => {
+  const requestId = response.headers.get("x-request-id");
+  assert.match(requestId ?? "", REQUEST_ID_HEADER_PATTERN);
+  return requestId ?? "";
+};
+
 test("runlogStorage.listRunLogs ignores invalid JSON and keeps deterministic order", async () => {
   await resetRunlogDir();
   await resetEvidenceDir();
@@ -1329,8 +1337,7 @@ test("evidence replay returns deterministic output with match=true for untampere
 
   const replayA = await makeReplayRequest();
   assert.equal(replayA.status, 200);
-  const replayARequestIdHeader = replayA.headers.get("x-request-id");
-  assert.match(replayARequestIdHeader ?? "", /^[A-Za-z0-9_-]{1,80}$/);
+  assertRequestIdHeader(replayA);
   const bodyA = (await replayA.json()) as {
     ok?: boolean;
     replay?: {
@@ -1445,8 +1452,7 @@ test("evidence replay returns leak-safe contract_violation details on internal s
       })
     );
     assert.equal(replayResponse.status, 500);
-    const replayErrorRequestIdHeader = replayResponse.headers.get("x-request-id");
-    assert.match(replayErrorRequestIdHeader ?? "", /^[A-Za-z0-9_-]{1,80}$/);
+    const replayErrorRequestIdHeader = assertRequestIdHeader(replayResponse);
     const replayBody = (await replayResponse.json()) as {
       ok?: boolean;
       error?: string;
@@ -1459,7 +1465,7 @@ test("evidence replay returns leak-safe contract_violation details on internal s
     };
     assert.equal(replayBody.ok, false);
     assert.equal(replayBody.error, "internal_error");
-    assert.match(replayBody.request_id ?? "", /^[A-Za-z0-9_-]{1,80}$/);
+    assert.match(replayBody.request_id ?? "", REQUEST_ID_HEADER_PATTERN);
     assert.equal(replayErrorRequestIdHeader, replayBody.request_id);
     assert.equal(replayBody.details?.code, "contract_violation");
     assert.equal(replayBody.details?.issues_count, 5);
