@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test:runlog": "node --import tsx --test tests/runlog/runlog.golden.test.ts",
+    "radiography:runlog": "node --import tsx src/bin/radiography-runlog.ts",
     "radiography:diff": "node scripts/radiography/diff.mjs",
     "radiography:evidence": "node scripts/radiography/evidence.mjs",
     "radiography:evidence:artifact": "node scripts/radiography/evidence-artifact.mjs",

@@ -42,12 +42,20 @@ export default function StudioPage() {
       <div className="flex items-center justify-between gap-4">
         <h1 className="text-3xl font-semibold tracking-tight">Studio</h1>
 
-        <Link
-          href="/"
-          className="rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-1.5 text-sm hover:bg-zinc-900"
-        >
-          Volver
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/studio/runlogs"
+            className="rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-1.5 text-sm hover:bg-zinc-900"
+          >
+            Runlog Console
+          </Link>
+          <Link
+            href="/"
+            className="rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-1.5 text-sm hover:bg-zinc-900"
+          >
+            Volver
+          </Link>
+        </div>
       </div>
 
       <p className="mt-3 text-zinc-400">
